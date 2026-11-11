@@ -1,5 +1,4 @@
-use otozane_core::config::{EffectConfig, Profile};
-use otozane_core::effects::EffectKind;
+use otozane_core::config::Profile;
 use otozane_core::{SAMPLE_RATE, engine};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -7,10 +6,7 @@ use std::time::Duration;
 fn main() {
     let input = std::env::args().nth(1);
     let (mut ctl, eng) = engine::new(SAMPLE_RATE as f32, 1);
-    let mut profile = Profile {
-        chain: vec![EffectConfig::new(1, EffectKind::Gain)],
-    };
-    profile.chain[0].params.insert("gain".into(), 6.0);
+    let profile = Profile::default();
     ctl.set_chain(&profile.chain)
         .expect("fresh engine accepts a chain");
     let backend = otozane_pipewire::Backend::start(eng, input);

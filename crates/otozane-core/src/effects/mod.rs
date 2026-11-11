@@ -1,6 +1,7 @@
 //! Built-in effects and the [`Processor`] interface every chain entry implements.
 
 mod gain;
+pub mod rnnoise;
 
 use crate::param::ParamSpec;
 use serde::{Deserialize, Serialize};
@@ -30,20 +31,23 @@ pub trait Processor: Send {
 #[serde(rename_all = "snake_case")]
 pub enum EffectKind {
     Gain,
+    Rnnoise,
 }
 
 impl EffectKind {
-    pub const ALL: &'static [EffectKind] = &[EffectKind::Gain];
+    pub const ALL: &'static [EffectKind] = &[EffectKind::Rnnoise, EffectKind::Gain];
 
     pub fn name(self) -> &'static str {
         match self {
             EffectKind::Gain => "Gain",
+            EffectKind::Rnnoise => "Noise Suppression",
         }
     }
 
     pub fn params(self) -> &'static [ParamSpec] {
         match self {
             EffectKind::Gain => gain::PARAMS,
+            EffectKind::Rnnoise => rnnoise::PARAMS,
         }
     }
 
@@ -51,14 +55,16 @@ impl EffectKind {
     pub fn meter_label(self) -> Option<&'static str> {
         match self {
             EffectKind::Gain => None,
+            EffectKind::Rnnoise => Some("Voice"),
         }
     }
 
     /// Creates a processor. Call this off the audio thread: it allocates.
     pub fn create(self, sample_rate: f32, channels: usize, max_block: usize) -> Box<dyn Processor> {
-        let _ = (sample_rate, channels, max_block);
+        let _ = (sample_rate, max_block);
         match self {
             EffectKind::Gain => Box::new(gain::Gain::default()),
+            EffectKind::Rnnoise => Box::new(rnnoise::Rnnoise::new(channels)),
         }
     }
 }

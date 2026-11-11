@@ -60,7 +60,10 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
-            chain: vec![EffectConfig::new(1, EffectKind::Gain)],
+            chain: vec![
+                EffectConfig::new(1, EffectKind::Rnnoise),
+                EffectConfig::new(2, EffectKind::Gain),
+            ],
         }
     }
 }
