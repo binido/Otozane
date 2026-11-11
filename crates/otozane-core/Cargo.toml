@@ -1,0 +1,14 @@
+[package]
+name = "otozane-core"
+description = "Platform-independent DSP engine and built-in effects for Otozane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rtrb.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "otozane-service"
+description = "Otozane background audio service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "otozaned"
+path = "src/main.rs"
+
+[dependencies]
+otozane-core.workspace = true
+otozane-pipewire.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+otozane-plugins = { path = "../otozane-plugins" }
+serde.workspace = true
