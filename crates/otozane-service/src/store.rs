@@ -8,15 +8,7 @@ pub struct Store {
     dir: PathBuf,
 }
 
-/// Returns `$XDG_CONFIG_HOME/otozane`, falling back to `~/.config/otozane`.
-pub fn config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("otozane")
-}
+pub use otozane_core::config::config_dir;
 
 /// Profile names become file names, so they are restricted at this boundary.
 pub fn validate_name(name: &str) -> Result<(), String> {

@@ -51,11 +51,11 @@ impl EffectKind {
         }
     }
 
-    /// Label of the per-effect meter, if the effect reports one.
-    pub fn meter_label(self) -> Option<&'static str> {
+    /// Label and unit of the per-effect meter, if the effect reports one.
+    pub fn meter(self) -> Option<(&'static str, &'static str)> {
         match self {
             EffectKind::Gain => None,
-            EffectKind::Rnnoise => Some("Voice"),
+            EffectKind::Rnnoise => Some(("Voice", "%")),
         }
     }
 
