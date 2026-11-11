@@ -10,6 +10,7 @@ pub mod dsp;
 pub mod effects;
 pub mod engine;
 pub mod param;
+pub mod protocol;
 
 /// Internal processing sample rate. RNNoise requires exactly 48 kHz.
 pub const SAMPLE_RATE: u32 = 48_000;

@@ -149,6 +149,9 @@ impl Engine {
     /// Processes interleaved audio with `self.channels()` channels in place.
     pub fn process_interleaved(&mut self, buf: &mut [f32]) {
         self.apply_pending();
+        if buf.is_empty() {
+            return;
+        }
         let ch = self.channels;
         let master = self.shared.processing_enabled.load(Ordering::Relaxed);
         let in_peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));

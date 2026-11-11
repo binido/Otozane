@@ -2,7 +2,8 @@
 # End-to-end check without touching real devices:
 #   tone -> temporary test source -> otozaned -> Otozane Microphone -> pw-record
 # All PipeWire objects created here are session-only and removed on exit.
-# Usage: scripts/e2e.sh [tone.wav]   (env: BIN, SVC_ARGS, OUT, SHOW_LINKS)
+# Usage: scripts/e2e.sh [input.wav] [chain-json]   (env: BIN, OUT, SHOW_LINKS)
+# The service runs with an isolated config directory under $OUT.
 set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 OUT=${OUT:-${XDG_RUNTIME_DIR:-/tmp}/otozane-e2e}
@@ -13,8 +14,10 @@ TONE=${1:-$OUT/tone.wav}
 pw-loopback --capture-props='media.class=Audio/Sink node.name=oz_test_sink audio.position=[MONO] node.dont-move=true' \
   --playback-props='media.class=Audio/Source node.name=oz_test_src audio.position=[MONO] node.dont-move=true' >"$OUT/loop.log" 2>&1 &
 LP=$!; sleep 1
-$BIN ${SVC_ARGS:-} >"$OUT/svc.log" 2>&1 &
-SV=$!; sleep 1.5
+XDG_CONFIG_HOME="$OUT/config" $BIN >"$OUT/svc.log" 2>&1 &
+SV=$!; sleep 1
+python3 "$DIR/ipc.py" '{"cmd":"set_input","device":"oz_test_src"}' ${2:+"{\"cmd\":\"set_chain\",\"chain\":$2}"} >/dev/null
+sleep 0.5
 pw-record -P '{ node.dont-move = true }' --target otozane_microphone --rate 48000 --channels 2 --format s16 "$OUT/rec.wav" &
 RC=$!; sleep 0.5
 [ -n "${SHOW_LINKS:-}" ] && pw-link -l | grep -A2 "^otozane"

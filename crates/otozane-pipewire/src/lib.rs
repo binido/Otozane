@@ -71,6 +71,8 @@ pub struct Counters {
     pub playback_quantum: AtomicU32,
     /// Frames left queued in the output ring after the last playback cycle.
     pub ring_fill: AtomicU32,
+    /// Number of capture callbacks that reached the engine.
+    pub capture_cycles: AtomicU64,
 }
 
 enum Command {
@@ -409,6 +411,23 @@ fn run(
         }
     });
 
+    // While no capture callback runs (no device, or stream not started), the
+    // engine is pumped with empty blocks so chain updates are still applied
+    // and retired chains returned. The pump only runs after the callback has
+    // been idle for a full timer period, so it does not contend with audio.
+    let (pump, last) = (shared.clone(), Cell::new(u64::MAX));
+    let timer = mainloop.loop_().add_timer(move |_| {
+        let cycles = pump.counters.capture_cycles.load(Ordering::Relaxed);
+        if cycles == last.get()
+            && let Ok(mut rt) = pump.rt.try_lock()
+        {
+            rt.engine.process_interleaved(&mut []);
+        }
+        last.set(cycles);
+    });
+    let period = Some(Duration::from_millis(100));
+    let _ = timer.update_timer(period, period);
+
     mainloop.run();
 
     let mut st = state.borrow_mut();
@@ -517,6 +536,7 @@ fn create_capture(
                 .store(frames as u32, Ordering::Relaxed);
             let Ok(mut rt) = rt.try_lock() else { return };
             rt.engine.process_interleaved(samples);
+            counters.capture_cycles.fetch_add(1, Ordering::Relaxed);
 
             let room = rt.out.slots() / OUTPUT_CHANNELS;
             let n = frames.min(room);
