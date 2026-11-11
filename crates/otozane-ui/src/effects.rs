@@ -251,8 +251,10 @@ fn eq_editor(ui: &mut Ui, id: u64, values: &[f32], changes: &mut Vec<(&'static s
             }
             ui.end_row();
             for (b, (band, vals)) in specs
-                .chunks_exact(4)
-                .zip(values.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(values.as_chunks::<4>().0)
                 .enumerate()
             {
                 ui.label(format!("{}", b + 1));
