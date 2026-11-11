@@ -1,6 +1,7 @@
 //! Background connection to `otozaned`. The UI thread never blocks on IPC:
 //! it queues requests and reads the latest published state.
 
+use otozane_core::config::Profile;
 use otozane_core::protocol::{Client, PluginList, Request, Response, Status};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -20,8 +21,8 @@ pub struct State {
     pub status: Option<Status>,
     pub profiles: Vec<String>,
     pub plugins: PluginList,
-    /// Errors returned by the service, newest last. Drained by the UI.
-    pub errors: Vec<String>,
+    /// Messages for the user, newest last (`true` = error). Drained by the UI.
+    pub messages: Vec<(String, bool)>,
 }
 
 pub struct ServiceClient {
@@ -37,7 +38,7 @@ impl ServiceClient {
             status: None,
             profiles: Vec::new(),
             plugins: PluginList::default(),
-            errors: Vec::new(),
+            messages: Vec::new(),
         }));
         let st = state.clone();
         std::thread::Builder::new()
@@ -50,6 +51,58 @@ impl ServiceClient {
     pub fn send(&self, req: Request) {
         let _ = self.tx.send(req);
     }
+
+    /// Asks for a file and imports it as a new profile named after the file.
+    pub fn import_profile(&self) {
+        let (tx, state) = (self.tx.clone(), self.state.clone());
+        std::thread::spawn(move || {
+            let Some(path) = rfd::FileDialog::new()
+                .set_title("Import profile")
+                .add_filter("Otozane profile", &["toml"])
+                .pick_file()
+            else {
+                return;
+            };
+            let result = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|s| toml::from_str::<Profile>(&s).map_err(|e| e.message().to_string()));
+            match result {
+                Ok(profile) => {
+                    let name = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Imported".into());
+                    let _ = tx.send(Request::ImportProfile { name, profile });
+                }
+                Err(e) => state
+                    .lock()
+                    .unwrap()
+                    .messages
+                    .push((format!("{} is not a profile: {e}", path.display()), true)),
+            }
+        });
+    }
+}
+
+/// Asks where to save an exported profile and writes it as TOML.
+fn export_profile(name: String, profile: Profile, state: Arc<Mutex<State>>) {
+    std::thread::spawn(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export profile")
+            .set_file_name(format!("{name}.toml"))
+            .add_filter("Otozane profile", &["toml"])
+            .save_file()
+        else {
+            return;
+        };
+        let msg = toml::to_string_pretty(&profile)
+            .map_err(|e| e.to_string())
+            .and_then(|s| std::fs::write(&path, s).map_err(|e| e.to_string()));
+        state.lock().unwrap().messages.push(match msg {
+            Ok(()) => (format!("Exported to {}", path.display()), false),
+            Err(e) => (format!("Export failed: {e}"), true),
+        });
+    });
 }
 
 fn run(rx: Receiver<Request>, state: Arc<Mutex<State>>, ctx: egui::Context) {
@@ -77,7 +130,7 @@ fn run(rx: Receiver<Request>, state: Arc<Mutex<State>>, ctx: egui::Context) {
 fn session(
     mut client: Client,
     rx: &Receiver<Request>,
-    state: &Mutex<State>,
+    state: &Arc<Mutex<State>>,
     ctx: &egui::Context,
 ) -> std::io::Error {
     let mut last_profiles = Instant::now() - Duration::from_secs(10);
@@ -88,7 +141,8 @@ fn session(
             Response::Status(st) => s.status = Some(*st),
             Response::Profiles { names } => s.profiles = names,
             Response::Plugins(list) => s.plugins = *list,
-            Response::Error { message } => s.errors.push(message),
+            Response::Error { message } => s.messages.push((message, true)),
+            Response::Profile { name, profile } => export_profile(name, profile, state.clone()),
             Response::Ok => {}
         }
         Ok(())
@@ -106,6 +160,7 @@ fn session(
                             | Request::SaveProfileAs { .. }
                             | Request::DeleteProfile { .. }
                             | Request::RenameProfile { .. }
+                            | Request::ImportProfile { .. }
                     );
                     if let Err(e) = handle(&mut client, &req) {
                         return e;

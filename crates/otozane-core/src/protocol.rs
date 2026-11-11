@@ -1,7 +1,7 @@
 //! IPC protocol between `otozaned` and clients: one JSON object per line in
 //! each direction over a Unix socket. Each request gets exactly one response.
 
-use crate::config::{EffectConfig, PluginRef};
+use crate::config::{EffectConfig, PluginRef, Profile};
 use crate::param::ParamDesc;
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +44,16 @@ pub enum Request {
         from: String,
         to: String,
     },
+    /// Returns a profile's contents (for export).
+    GetProfile {
+        name: String,
+    },
+    /// Stores a profile under `name`, or `name 2`, `name 3`... if taken.
+    /// Does not switch to it.
+    ImportProfile {
+        name: String,
+        profile: Profile,
+    },
     /// Returns the last plugin scan result.
     ListPlugins,
     /// Rescans the plugin directories in the background.
@@ -59,6 +69,7 @@ pub enum Response {
     Status(Box<Status>),
     Profiles { names: Vec<String> },
     Plugins(Box<PluginList>),
+    Profile { name: String, profile: Profile },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

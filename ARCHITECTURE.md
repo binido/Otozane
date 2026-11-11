@@ -115,6 +115,14 @@ profile are written within 100 ms. Unparseable `config.toml` is moved to
 `config.toml.bak` instead of being overwritten. Profile names are validated
 before being used as file names.
 
+Profile export and import go through the UI: it asks the service for a
+profile (`get_profile`) and writes the TOML file the user picks in the system
+file dialog, or reads a file and sends it (`import_profile`). The service never
+reads or writes paths chosen by a client. An imported profile is stored under
+the file name (with ` 2`, ` 3`... if taken) and is not activated. Plugin
+entries keep their bundle paths; a plugin missing on this machine shows a load
+error on its card.
+
 ## UI
 
 `otozane` is an egui/eframe app. A background thread polls status at ~30 Hz and

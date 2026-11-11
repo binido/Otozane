@@ -76,7 +76,7 @@ pub struct App {
     last_edit: Instant,
     levels: (f32, f32),
     last_frame: Instant,
-    toasts: Vec<(String, Instant)>,
+    toasts: Vec<(String, Instant, bool)>,
     /// Effect cards the user collapsed; all others show their parameters.
     pub collapsed: std::collections::HashSet<u64>,
     pub plugins: otozane_core::protocol::PluginList,
@@ -139,14 +139,14 @@ impl App {
             self.connection = s.connection.clone();
             self.profiles = s.profiles.clone();
             self.plugins = s.plugins.clone();
-            (s.status.clone(), std::mem::take(&mut s.errors))
+            (s.status.clone(), std::mem::take(&mut s.messages))
         };
         let now = Instant::now();
-        for e in errors {
-            self.toasts.push((e, now));
+        for (msg, is_error) in errors {
+            self.toasts.push((msg, now, is_error));
         }
         self.toasts
-            .retain(|(_, t)| t.elapsed() < Duration::from_secs(5));
+            .retain(|(_, t, _)| t.elapsed() < Duration::from_secs(5));
         let dt = (now - self.last_frame).as_secs_f32().min(0.2);
         self.last_frame = now;
         // Peak meters with a 20 dB/s style decay.
@@ -209,8 +209,11 @@ impl App {
                 .clicked()
                 && let Err(e) = client::start_service()
             {
-                self.toasts
-                    .push((format!("Could not start otozaned: {e}"), Instant::now()));
+                self.toasts.push((
+                    format!("Could not start otozaned: {e}"),
+                    Instant::now(),
+                    true,
+                ));
             }
         });
     }
@@ -418,12 +421,21 @@ impl App {
                     {
                         self.renaming = Some((name.clone(), name.clone()));
                     }
+                    if ui.button("Export").clicked() {
+                        self.send(Request::GetProfile { name: name.clone() });
+                    }
                     if !is_active && ui.button("Load").clicked() {
                         self.send(Request::LoadProfile { name: name.clone() });
                     }
                 });
             }
         });
+        if ui
+            .button(icon_text(icons::FOLDER_OPEN, "Import profile..."))
+            .clicked()
+        {
+            self.client.import_profile();
+        }
         section(ui, "Save current chain as a new profile");
         card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -641,11 +653,13 @@ impl eframe::App for App {
             egui::Area::new(egui::Id::unique("toasts"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
                 .show(ui.ctx(), |ui| {
-                    for (msg, _) in &self.toasts {
+                    for (msg, _, is_error) in &self.toasts {
                         Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(
-                                RichText::new(icon_text(icons::CIRCLE_ALERT, msg)).color(p.error),
-                            );
+                            ui.label(if *is_error {
+                                RichText::new(icon_text(icons::CIRCLE_ALERT, msg)).color(p.error)
+                            } else {
+                                RichText::new(icon_text(icons::CIRCLE_CHECK, msg))
+                            });
                         });
                     }
                 });

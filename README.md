@@ -23,7 +23,7 @@ applications' audio, or your default devices.
 - Reorderable effect chain with live parameter changes and click-free bypass.
 - Voice preset (default for new setups): gain, RNNoise with voice detection,
   gate, compressor, limiter. Profiles → Presets creates it as a new profile.
-- Profiles: create, rename, delete, switch. The active profile saves automatically.
+- Profiles: create, rename, delete, switch, export to and import from `.toml` files. The active profile saves automatically.
 - Background service (`otozaned`); the GUI (`otozane`) is optional.
 - egui desktop app with light/dark/system themes, level meters and diagnostics.
 

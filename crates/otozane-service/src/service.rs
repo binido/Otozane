@@ -251,6 +251,44 @@ impl Service {
                     Err(e) => err(e),
                 }
             }
+            Request::GetProfile { name } => {
+                let profile = if name == self.settings.active_profile {
+                    self.capture_plugin_states();
+                    Ok(Profile {
+                        chain: self.chain.clone(),
+                    })
+                } else {
+                    self.store.load_profile(&name)
+                };
+                match profile {
+                    Ok(profile) => Response::Profile { name, profile },
+                    Err(e) => err(format!("cannot read profile '{name}': {e}")),
+                }
+            }
+            Request::ImportProfile { name, profile } => {
+                if let Err(e) = validate_name(&name) {
+                    return err(e);
+                }
+                let mut ids = std::collections::HashSet::new();
+                if !profile.chain.iter().all(|e| ids.insert(e.id)) {
+                    return err("effect ids must be unique");
+                }
+                let taken = self.store.list_profiles();
+                let name = (1..)
+                    .map(|i| {
+                        if i == 1 {
+                            name.clone()
+                        } else {
+                            format!("{name} {i}")
+                        }
+                    })
+                    .find(|n| !taken.contains(n))
+                    .unwrap();
+                match self.store.save_profile(&name, &profile) {
+                    Ok(()) => Response::Ok,
+                    Err(e) => err(e),
+                }
+            }
             Request::ListPlugins => Response::Plugins(Box::new(self.scan.lock().unwrap().clone())),
             Request::ScanPlugins => {
                 self.start_scan();
