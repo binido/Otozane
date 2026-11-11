@@ -216,6 +216,8 @@ struct Main {
     devices: Vec<(u32, Device)>,
     /// System default source (`default.audio.source` metadata), if known.
     default_source: Option<String>,
+    /// Last default source that was a physical device.
+    last_physical_default: Option<String>,
     _metadata: Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
     capture: Option<Capture>,
     /// Global ids of our feed stream node and our virtual microphone node.
@@ -233,21 +235,18 @@ fn default_name(value: &str) -> Option<String> {
     Some(v.get("name")?.as_str()?.to_string())
 }
 
-/// Input for "Automatic": the system default source unless it is virtual
-/// (e.g. our own microphone or another processor's output), else the first
-/// physical device that looks like a microphone, else the first physical one.
+/// Input for "Automatic": the system default source if it is a physical
+/// device, else the last physical default seen while running (the default is
+/// often set to our own microphone so apps use it), else the first physical device.
 fn auto_input<'a>(
     devices: impl Iterator<Item = &'a Device> + Clone,
     default: Option<&str>,
+    last_default: Option<&str>,
 ) -> Option<String> {
     let physical = devices.filter(|d| !d.is_virtual);
-    let is_mic = |d: &&Device| {
-        let s = format!("{} {}", d.name, d.description).to_lowercase();
-        s.contains("mic") && !s.contains("line")
-    };
-    default
-        .and_then(|n| physical.clone().find(|d| d.name == n))
-        .or_else(|| physical.clone().find(is_mic))
+    let find = |n: Option<&str>| n.and_then(|n| physical.clone().find(|d| d.name == n));
+    find(default)
+        .or_else(|| find(last_default))
         .or_else(|| physical.clone().next())
         .map(|d| d.name.clone())
 }
@@ -311,10 +310,21 @@ impl Main {
                 .iter()
                 .find(|(_, d)| &d.name == name)
                 .map(|(_, d)| d.name.clone()),
-            None => auto_input(
-                self.devices.iter().map(|(_, d)| d),
-                self.default_source.as_deref(),
-            ),
+            None => {
+                let d = self.default_source.as_deref();
+                if self
+                    .devices
+                    .iter()
+                    .any(|(_, x)| !x.is_virtual && Some(x.name.as_str()) == d)
+                {
+                    self.last_physical_default = d.map(str::to_string);
+                }
+                auto_input(
+                    self.devices.iter().map(|(_, d)| d),
+                    d,
+                    self.last_physical_default.as_deref(),
+                )
+            }
         };
         if self.capture.as_ref().map(|c| &c.target) == target.as_ref() {
             return;
@@ -370,6 +380,7 @@ fn run(
         desired: input.clone(),
         devices: Vec::new(),
         default_source: None,
+        last_physical_default: None,
         _metadata: None,
         capture: None,
         output_node: None,
@@ -803,24 +814,22 @@ mod tests {
             dev("xlr", "iD4 XLR Microphone", false),
             dev("ee", "Easy Effects Source", true),
         ];
-        let pick = |d: Option<&str>| auto_input(devs.iter(), d);
+        let pick = |d, last| auto_input(devs.iter(), d, last);
         assert_eq!(
-            pick(Some("line")).as_deref(),
-            Some("line"),
+            pick(Some("xlr"), None).as_deref(),
+            Some("xlr"),
             "follows the default"
         );
         assert_eq!(
-            pick(Some("ee")).as_deref(),
+            pick(Some("ee"), Some("xlr")).as_deref(),
             Some("xlr"),
-            "virtual default skipped"
+            "keeps last physical"
         );
         assert_eq!(
-            pick(Some("otozane_microphone")).as_deref(),
-            Some("xlr"),
-            "unknown default"
+            pick(Some("otozane_microphone"), None).as_deref(),
+            Some("line")
         );
-        assert_eq!(pick(None).as_deref(), Some("xlr"));
-        assert_eq!(auto_input(devs[..1].iter(), None).as_deref(), Some("line"));
+        assert_eq!(pick(None, None).as_deref(), Some("line"));
         assert_eq!(
             default_name(r#"{"name":"alsa_input.x"}"#).as_deref(),
             Some("alsa_input.x")
