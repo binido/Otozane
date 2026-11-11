@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+otozane-core = { path = "crates/otozane-core" }
+otozane-pipewire = { path = "crates/otozane-pipewire" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rtrb = "0.3"
+pipewire = { version = "0.10", features = ["v0_3_49"] }
