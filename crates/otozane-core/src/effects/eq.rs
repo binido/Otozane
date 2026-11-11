@@ -92,7 +92,9 @@ pub fn band_coefs(v: &[f32], sample_rate: f32) -> Option<Coefs> {
 /// Combined magnitude response in dB at `freq` for a full parameter set.
 pub fn response_db(params: &[f32], freq: f32, sample_rate: f32) -> f32 {
     params
-        .chunks_exact(PER_BAND)
+        .as_chunks::<PER_BAND>()
+        .0
+        .iter()
         .filter_map(|b| band_coefs(b, sample_rate))
         .map(|c| c.response_db(freq, sample_rate))
         .sum()
@@ -121,7 +123,12 @@ impl Processor for Equalizer {
         // Coefficients are recomputed only when a parameter changed.
         if self.last[..] != p[..] {
             self.last.copy_from_slice(p);
-            for (b, c) in p.chunks_exact(PER_BAND).zip(self.coefs.iter_mut()) {
+            for (b, c) in p
+                .as_chunks::<PER_BAND>()
+                .0
+                .iter()
+                .zip(self.coefs.iter_mut())
+            {
                 *c = band_coefs(b, self.sr);
             }
         }
