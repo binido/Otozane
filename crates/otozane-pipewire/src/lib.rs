@@ -124,7 +124,7 @@ pub struct Backend {
 
 impl Backend {
     /// Starts the PipeWire thread. `input` is the `node.name` of the
-    /// microphone to capture, or `None` to pick the first physical one.
+    /// microphone to capture, or `None` to follow the system default.
     pub fn start(engine: Engine, input: Option<String>) -> Self {
         let status = Arc::new(Mutex::new(Status::default()));
         let counters = Arc::new(Counters::default());
@@ -214,6 +214,9 @@ struct Main {
     shared: Shared,
     desired: Option<String>,
     devices: Vec<(u32, Device)>,
+    /// System default source (`default.audio.source` metadata), if known.
+    default_source: Option<String>,
+    _metadata: Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
     capture: Option<Capture>,
     /// Global ids of our feed stream node and our virtual microphone node.
     output_node: Option<u32>,
@@ -222,6 +225,31 @@ struct Main {
     /// Links from the feed stream to the virtual microphone. WirePlumber does
     /// not link a playback stream into a source node, so we do it ourselves.
     links: Vec<pw::link::Link>,
+}
+
+/// Node name from a `default.audio.source` value: `{"name":"..."}`.
+fn default_name(value: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(value).ok()?;
+    Some(v.get("name")?.as_str()?.to_string())
+}
+
+/// Input for "Automatic": the system default source unless it is virtual
+/// (e.g. our own microphone or another processor's output), else the first
+/// physical device that looks like a microphone, else the first physical one.
+fn auto_input<'a>(
+    devices: impl Iterator<Item = &'a Device> + Clone,
+    default: Option<&str>,
+) -> Option<String> {
+    let physical = devices.filter(|d| !d.is_virtual);
+    let is_mic = |d: &&Device| {
+        let s = format!("{} {}", d.name, d.description).to_lowercase();
+        s.contains("mic") && !s.contains("line")
+    };
+    default
+        .and_then(|n| physical.clone().find(|d| d.name == n))
+        .or_else(|| physical.clone().find(is_mic))
+        .or_else(|| physical.clone().next())
+        .map(|d| d.name.clone())
 }
 
 struct Port {
@@ -278,10 +306,16 @@ impl Main {
     /// Makes the capture stream match the desired device and current device list.
     fn reconcile(&mut self) {
         let target = match &self.desired {
-            Some(name) => self.devices.iter().find(|(_, d)| &d.name == name),
-            None => self.devices.iter().find(|(_, d)| !d.is_virtual),
-        }
-        .map(|(_, d)| d.name.clone());
+            Some(name) => self
+                .devices
+                .iter()
+                .find(|(_, d)| &d.name == name)
+                .map(|(_, d)| d.name.clone()),
+            None => auto_input(
+                self.devices.iter().map(|(_, d)| d),
+                self.default_source.as_deref(),
+            ),
+        };
         if self.capture.as_ref().map(|c| &c.target) == target.as_ref() {
             return;
         }
@@ -335,6 +369,8 @@ fn run(
         shared: shared.clone(),
         desired: input.clone(),
         devices: Vec::new(),
+        default_source: None,
+        _metadata: None,
         capture: None,
         output_node: None,
         virtual_node: None,
@@ -344,10 +380,36 @@ fn run(
 
     let registry = core.get_registry_rc()?;
     let (s1, s2) = (state.clone(), state.clone());
+    let reg = registry.clone();
+    let weak = Rc::downgrade(&state);
     let _registry_listener = registry
         .add_listener_local()
         .global(move |obj| {
             let Some(props) = obj.props else { return };
+            if obj.type_ == pw::types::ObjectType::Metadata
+                && props.get("metadata.name") == Some("default")
+            {
+                let Ok(md) = reg.bind::<pw::metadata::Metadata, _>(obj) else {
+                    return;
+                };
+                let weak = weak.clone();
+                let listener = md
+                    .add_listener_local()
+                    .property(move |subject, key, _, value| {
+                        if subject == 0
+                            && key.is_none_or(|k| k == "default.audio.source")
+                            && let Some(st) = weak.upgrade()
+                        {
+                            let mut st = st.borrow_mut();
+                            st.default_source = value.and_then(default_name);
+                            st.reconcile();
+                        }
+                        0
+                    })
+                    .register();
+                s1.borrow_mut()._metadata = Some((md, listener));
+                return;
+            }
             if obj.type_ == pw::types::ObjectType::Port {
                 let node = props.get(*pw::keys::NODE_ID).and_then(|v| v.parse().ok());
                 let (Some(node), Some(channel)) = (node, props.get(*pw::keys::AUDIO_CHANNEL))
@@ -720,4 +782,48 @@ fn create_playback(
 
 fn data_chunk<'a>(buffer: &'a mut pw::buffer::Buffer<'_>) -> Option<&'a mut spa::buffer::Chunk> {
     buffer.datas_mut().first_mut().map(|d| d.chunk_mut())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dev(name: &str, description: &str, is_virtual: bool) -> Device {
+        Device {
+            name: name.into(),
+            description: description.into(),
+            is_virtual,
+        }
+    }
+
+    #[test]
+    fn automatic_input_choice() {
+        let devs = [
+            dev("line", "iD4 Line Input", false),
+            dev("xlr", "iD4 XLR Microphone", false),
+            dev("ee", "Easy Effects Source", true),
+        ];
+        let pick = |d: Option<&str>| auto_input(devs.iter(), d);
+        assert_eq!(
+            pick(Some("line")).as_deref(),
+            Some("line"),
+            "follows the default"
+        );
+        assert_eq!(
+            pick(Some("ee")).as_deref(),
+            Some("xlr"),
+            "virtual default skipped"
+        );
+        assert_eq!(
+            pick(Some("otozane_microphone")).as_deref(),
+            Some("xlr"),
+            "unknown default"
+        );
+        assert_eq!(pick(None).as_deref(), Some("xlr"));
+        assert_eq!(auto_input(devs[..1].iter(), None).as_deref(), Some("line"));
+        assert_eq!(
+            default_name(r#"{"name":"alsa_input.x"}"#).as_deref(),
+            Some("alsa_input.x")
+        );
+    }
 }

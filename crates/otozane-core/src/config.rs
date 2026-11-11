@@ -127,10 +127,41 @@ pub struct Profile {
 
 impl Default for Profile {
     fn default() -> Self {
+        Self::voice()
+    }
+}
+
+impl Profile {
+    /// Speech preset: level, noise suppression that also mutes non-voice
+    /// sounds between words (clicks, snaps, keyboard), a gate for what is
+    /// left, then gentle compression and a safety limiter.
+    pub fn voice() -> Self {
+        let with = |id, kind, params: &[(&str, f32)]| {
+            let mut e = EffectConfig::new(id, kind);
+            for (k, v) in params {
+                e.params.insert(k.to_string(), *v);
+            }
+            e
+        };
         Self {
             chain: vec![
-                EffectConfig::new(1, EffectKind::Rnnoise),
-                EffectConfig::new(2, EffectKind::Gain),
+                with(1, EffectKind::Gain, &[]),
+                with(
+                    2,
+                    EffectKind::Rnnoise,
+                    &[("vad_threshold", 60.0), ("vad_grace", 250.0)],
+                ),
+                with(
+                    3,
+                    EffectKind::Gate,
+                    &[("threshold", -50.0), ("range", -40.0), ("hold", 100.0)],
+                ),
+                with(
+                    4,
+                    EffectKind::Compressor,
+                    &[("threshold", -20.0), ("ratio", 3.0), ("makeup", 4.0)],
+                ),
+                with(5, EffectKind::Limiter, &[("ceiling", -1.0)]),
             ],
         }
     }
@@ -141,7 +172,7 @@ impl Default for Profile {
 #[serde(default)]
 pub struct Settings {
     /// PipeWire `node.name` of the selected microphone. `None` picks the
-    /// first available physical microphone.
+    /// system default source (see `otozane_pipewire`).
     pub input_device: Option<String>,
     pub processing_enabled: bool,
     pub active_profile: String,

@@ -16,11 +16,13 @@ applications' audio, or your default devices.
 
 - Virtual microphone (`Otozane Microphone`) owned by the service and removed
   automatically when it stops.
-- Microphone selection, with automatic recovery when a device is unplugged and
+- Microphone selection ("Automatic" follows the system default microphone), with automatic recovery when a device is unplugged and
   plugged back in.
 - Built-in effects: RNNoise noise suppression (with optional voice-activity
   gate), gain, noise gate, five-band parametric EQ, compressor, lookahead limiter.
 - Reorderable effect chain with live parameter changes and click-free bypass.
+- Voice preset (default for new setups): gain, RNNoise with voice detection,
+  gate, compressor, limiter. Profiles → Presets creates it as a new profile.
 - Profiles: create, rename, delete, switch. The active profile saves automatically.
 - Background service (`otozaned`); the GUI (`otozane`) is optional.
 - egui desktop app with light/dark/system themes, level meters and diagnostics.

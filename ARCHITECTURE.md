@@ -38,6 +38,10 @@ that drives `engine::Engine` from its audio callback.
   ring buffer decouples them. The playback side discards stale audio beyond
   one capture quantum, so latency stays bounded after idle periods or clock
   drift. There is no resampling; drift is corrected by dropping frames.
+- "Automatic" input follows the system default source (the `default`
+  metadata's `default.audio.source`), switching live when it changes. A virtual
+  default (our own microphone, EasyEffects' output) is skipped in favor of the
+  first physical device that looks like a microphone (not a line input).
 - Device discovery uses the registry. Our own virtual microphone is never
   listed, and the service rejects it as an input. When the selected device
   disappears the capture stream is destroyed; it is recreated when a node with

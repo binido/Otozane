@@ -8,3 +8,4 @@ license.workspace = true
 otozane-core.workspace = true
 pipewire.workspace = true
 rtrb.workspace = true
+serde_json.workspace = true

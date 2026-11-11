@@ -25,8 +25,7 @@ Status legend: [x] done, [~] partial, [ ] not started.
 ## Next steps
 
 - JSFX via ysfx.
-- "Automatic" input should follow the system default source (`default.audio.source`), never our own node.
-- A better default voice chain (Gain, RNNoise with VAD, Gate, Compressor, Limiter).
+- Tune the Voice preset on real speech (not verified on a speech recording yet).
 - Optional resampling-based drift correction instead of dropping frames.
 - Stereo/mono switch at runtime (currently needs a service restart).
 

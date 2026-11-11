@@ -445,6 +445,27 @@ impl App {
                 }
             });
         });
+        section(ui, "Presets");
+        card(ui, |ui| {
+            row(
+                ui,
+                "Voice",
+                Some("Gain, noise suppression with voice detection, gate, compressor, limiter"),
+                |ui| {
+                    if ui
+                        .button(icon_text(icons::PLUS, "Create profile"))
+                        .clicked()
+                    {
+                        // Keeps the current profile: switch to a new one, then fill it.
+                        let name = unique_name(&self.profiles, "Voice");
+                        self.send(Request::SaveProfileAs { name });
+                        self.send(Request::SetChain {
+                            chain: otozane_core::config::Profile::voice().chain,
+                        });
+                    }
+                },
+            );
+        });
     }
 
     fn settings_page(&mut self, ui: &mut Ui) {
@@ -547,6 +568,20 @@ impl App {
                 });
         });
     }
+}
+
+/// `base`, or `base 2`, `base 3`... if taken.
+fn unique_name(taken: &[String], base: &str) -> String {
+    (1..)
+        .map(|i| {
+            if i == 1 {
+                base.to_string()
+            } else {
+                format!("{base} {i}")
+            }
+        })
+        .find(|n| !taken.contains(n))
+        .unwrap()
 }
 
 fn device_label(st: &Status, name: Option<&str>) -> String {

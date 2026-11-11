@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Status,
-    /// `None` selects the first available physical microphone.
+    /// `None` follows the system default source (never a virtual one).
     SetInput {
         device: Option<String>,
     },
