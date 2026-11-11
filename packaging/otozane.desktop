@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Otozane
+Comment=Real-time microphone processor
+Exec=otozane
+Icon=audio-input-microphone
+Categories=AudioVideo;Audio;
+StartupWMClass=otozane

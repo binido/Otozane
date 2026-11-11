@@ -1,0 +1,13 @@
+[Unit]
+Description=Otozane microphone processor
+After=pipewire.service wireplumber.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/otozaned
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
