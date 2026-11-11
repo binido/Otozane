@@ -2,7 +2,7 @@
 
 use crate::config::EffectConfig;
 use crate::effects::{EffectKind, Processor};
-use crate::param::AtomicF32;
+use crate::param::{AtomicF32, ParamDesc};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -181,14 +181,34 @@ impl Engine {
     }
 }
 
+/// An effect instance built outside the core, e.g. a hosted plugin.
+pub struct External {
+    pub processor: Box<dyn Processor>,
+    pub params: Vec<ParamDesc>,
+    /// Current parameter values reported by the instance (e.g. after restoring
+    /// its state), used where the configuration has no value.
+    pub values: Vec<f32>,
+}
+
+/// Builds [`External`] instances for chain entries the core cannot create itself.
+pub type Factory<'a> = dyn FnMut(&EffectConfig) -> Result<External, String> + 'a;
+
+/// Controller-side bookkeeping for one chain slot.
+struct SlotInfo {
+    shared: Arc<SlotShared>,
+    plugin: Option<crate::config::PluginRef>,
+    params: Arc<[ParamDesc]>,
+    latency: usize,
+    error: Option<String>,
+}
+
 /// Non-real-time half of the engine. Builds effects and sends them to [`Engine`].
 pub struct Controller {
     sample_rate: f32,
     channels: usize,
     outgoing: rtrb::Producer<Box<Chain>>,
     garbage: rtrb::Consumer<Box<Chain>>,
-    slots: Vec<Arc<SlotShared>>,
-    latencies: Vec<usize>,
+    slots: Vec<SlotInfo>,
     pub shared: Arc<EngineShared>,
 }
 
@@ -216,7 +236,6 @@ pub fn new(sample_rate: f32, channels: usize) -> (Controller, Engine) {
         outgoing,
         garbage,
         slots: Vec::new(),
-        latencies: Vec::new(),
         shared,
     };
     (controller, engine)
@@ -248,9 +267,15 @@ impl Controller {
         while self.garbage.pop().is_ok() {}
     }
 
-    /// Replaces the chain. Effects whose id and kind match an existing slot
-    /// keep their processor and internal state.
-    pub fn set_chain(&mut self, chain: &[EffectConfig]) -> Result<(), ControlError> {
+    /// Replaces the chain. Effects whose id, kind and plugin match an existing
+    /// slot keep their processor and internal state. New plugin entries are
+    /// created by `factory`; a failed plugin becomes a pass-through slot and
+    /// its error is reported by [`Controller::effect_error`].
+    pub fn set_chain(
+        &mut self,
+        chain: &[EffectConfig],
+        factory: &mut Factory<'_>,
+    ) -> Result<(), ControlError> {
         self.collect_garbage();
         if self.outgoing.slots() == 0 {
             return Err(ControlError::Busy);
@@ -259,81 +284,158 @@ impl Controller {
             ids: Vec::with_capacity(chain.len()),
             slots: Vec::with_capacity(chain.len()),
         };
-        let mut shared = Vec::with_capacity(chain.len());
-        let mut latencies = Vec::with_capacity(chain.len());
+        let mut infos = Vec::with_capacity(chain.len());
         for cfg in chain {
-            let existing = self
-                .slots
-                .iter()
-                .position(|s| s.id == cfg.id && s.kind == cfg.kind);
-            let slot_shared = match existing {
+            let existing = self.slots.iter().position(|s| {
+                s.shared.id == cfg.id && s.shared.kind == cfg.kind && s.plugin == cfg.plugin
+            });
+            let info = match existing {
                 Some(i) => {
                     next.slots.push(None);
-                    latencies.push(self.latencies[i]);
-                    self.slots[i].clone()
+                    let old = &self.slots[i];
+                    SlotInfo {
+                        shared: old.shared.clone(),
+                        plugin: old.plugin.clone(),
+                        params: old.params.clone(),
+                        latency: old.latency,
+                        error: old.error.clone(),
+                    }
                 }
                 None => {
-                    let s = Arc::new(SlotShared {
+                    let (processor, params, fallback, error) = if cfg.kind == EffectKind::Plugin {
+                        match factory(cfg) {
+                            Ok(e) => (e.processor, e.params, e.values, None),
+                            Err(e) => (
+                                Box::new(crate::effects::Passthrough) as Box<dyn Processor>,
+                                Vec::new(),
+                                Vec::new(),
+                                Some(e),
+                            ),
+                        }
+                    } else {
+                        let params: Vec<ParamDesc> =
+                            cfg.kind.params().iter().map(ParamDesc::from).collect();
+                        let p = cfg.kind.create(self.sample_rate, self.channels, MAX_BLOCK);
+                        let defaults = params.iter().map(|d| d.default).collect();
+                        (p, params, defaults, None)
+                    };
+                    let values = values_for(cfg, &params, &fallback);
+                    let shared = Arc::new(SlotShared {
                         id: cfg.id,
                         kind: cfg.kind,
                         enabled: AtomicBool::new(cfg.enabled),
-                        params: cfg.values().into_iter().map(AtomicF32::new).collect(),
+                        params: values.into_iter().map(AtomicF32::new).collect(),
                         meter: AtomicF32::default(),
                     });
-                    let p = cfg.kind.create(self.sample_rate, self.channels, MAX_BLOCK);
-                    latencies.push(p.latency());
-                    next.slots.push(Some(Slot::new(s.clone(), p)));
-                    s
+                    let latency = processor.latency();
+                    next.slots.push(Some(Slot::new(shared.clone(), processor)));
+                    SlotInfo {
+                        shared,
+                        plugin: cfg.plugin.clone(),
+                        params: params.into(),
+                        latency,
+                        error,
+                    }
                 }
             };
-            slot_shared.enabled.store(cfg.enabled, Ordering::Relaxed);
-            for (a, v) in slot_shared.params.iter().zip(cfg.values()) {
+            info.shared.enabled.store(cfg.enabled, Ordering::Relaxed);
+            let current: Vec<f32> = info.shared.params.iter().map(|a| a.load()).collect();
+            for (a, v) in info
+                .shared
+                .params
+                .iter()
+                .zip(values_for(cfg, &info.params, &current))
+            {
                 a.store(v);
             }
             next.ids.push(cfg.id);
-            shared.push(slot_shared);
+            infos.push(info);
         }
         self.outgoing
             .push(Box::new(next))
             .map_err(|_| ControlError::Busy)?;
-        self.slots = shared;
-        self.latencies = latencies;
+        self.slots = infos;
         self.shared.latency_frames.store(
-            self.latencies.iter().sum::<usize>() as u32,
+            self.slots.iter().map(|s| s.latency).sum::<usize>() as u32,
             Ordering::Relaxed,
         );
         Ok(())
     }
 
-    fn slot(&self, id: u64) -> Result<&Arc<SlotShared>, ControlError> {
+    fn slot(&self, id: u64) -> Result<&SlotInfo, ControlError> {
         self.slots
             .iter()
-            .find(|s| s.id == id)
+            .find(|s| s.shared.id == id)
             .ok_or(ControlError::UnknownEffect(id))
     }
 
     pub fn set_param(&self, id: u64, key: &str, value: f32) -> Result<f32, ControlError> {
         let slot = self.slot(id)?;
-        let (i, spec) = slot
-            .kind
-            .params()
+        let (i, desc) = slot
+            .params
             .iter()
             .enumerate()
             .find(|(_, p)| p.key == key)
             .ok_or_else(|| ControlError::UnknownParam(key.into()))?;
-        let v = spec.clamp(value);
-        slot.params[i].store(v);
+        let v = desc.clamp(value);
+        slot.shared.params[i].store(v);
         Ok(v)
     }
 
+    /// Parameter descriptions of an effect.
+    pub fn params(&self, id: u64) -> Arc<[ParamDesc]> {
+        self.slot(id)
+            .map_or_else(|_| Arc::from([]), |s| s.params.clone())
+    }
+
+    /// Current parameter values of an effect, parallel to [`Controller::params`].
+    pub fn values(&self, id: u64) -> Vec<f32> {
+        self.slot(id)
+            .map(|s| s.shared.params.iter().map(|a| a.load()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Why an effect is inactive, e.g. a plugin that failed to load.
+    pub fn effect_error(&self, id: u64) -> Option<String> {
+        self.slot(id).ok().and_then(|s| s.error.clone())
+    }
+
     pub fn set_enabled(&self, id: u64, enabled: bool) -> Result<(), ControlError> {
-        self.slot(id)?.enabled.store(enabled, Ordering::Relaxed);
+        self.slot(id)?
+            .shared
+            .enabled
+            .store(enabled, Ordering::Relaxed);
         Ok(())
     }
 
     pub fn meter(&self, id: u64) -> f32 {
-        self.slot(id).map_or(0.0, |s| s.meter.load())
+        self.slot(id).map_or(0.0, |s| s.shared.meter.load())
     }
+}
+
+/// Values for `descs` taken from the configuration, else `fallback`, else defaults.
+fn values_for(cfg: &EffectConfig, descs: &[ParamDesc], fallback: &[f32]) -> Vec<f32> {
+    descs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let v = cfg
+                .params
+                .get(&d.key)
+                .copied()
+                .or_else(|| fallback.get(i).copied())
+                .unwrap_or(d.default);
+            d.clamp(v)
+        })
+        .collect()
+}
+
+/// Factory for chains without plugins.
+pub fn no_plugins(cfg: &EffectConfig) -> Result<External, String> {
+    Err(format!(
+        "plugin hosting unavailable for '{}'",
+        cfg.display_name()
+    ))
 }
 
 #[cfg(test)]
@@ -349,7 +451,7 @@ mod tests {
     #[test]
     fn chain_swap_param_and_bypass() {
         let (mut ctl, mut eng) = new(48000.0, 2);
-        ctl.set_chain(&[gain_cfg(1, 6.0)]).unwrap();
+        ctl.set_chain(&[gain_cfg(1, 6.0)], &mut no_plugins).unwrap();
         let mut buf = vec![0.5f32; 2048];
         eng.process_interleaved(&mut buf);
         eng.process_interleaved(&mut buf.clone());
@@ -381,10 +483,10 @@ mod tests {
     #[test]
     fn reordering_keeps_processor_instances() {
         let (mut ctl, mut eng) = new(48000.0, 1);
-        ctl.set_chain(&[gain_cfg(1, 0.0), gain_cfg(2, 0.0)])
+        ctl.set_chain(&[gain_cfg(1, 0.0), gain_cfg(2, 0.0)], &mut no_plugins)
             .unwrap();
         eng.process_interleaved(&mut [0.0; 64]);
-        ctl.set_chain(&[gain_cfg(2, 0.0), gain_cfg(1, 0.0)])
+        ctl.set_chain(&[gain_cfg(2, 0.0), gain_cfg(1, 0.0)], &mut no_plugins)
             .unwrap();
         eng.process_interleaved(&mut [0.0; 64]);
         assert!(eng.chain.slots.iter().all(|s| s.is_some()));

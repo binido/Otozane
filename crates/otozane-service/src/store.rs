@@ -43,6 +43,10 @@ impl Store {
         Self { dir }
     }
 
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.dir.join("config.toml")
     }

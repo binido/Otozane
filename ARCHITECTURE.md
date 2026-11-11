@@ -6,6 +6,7 @@
 otozane-core       platform-independent: engine, effects, config, IPC protocol
 otozane-pipewire   Linux backend (depends on core)
 otozane-service    otozaned binary (core + pipewire)
+otozane-plugins    third-party plugin hosting (VST3)
 otozane-ui         otozane binary (core only; talks to the service over IPC)
 ```
 
@@ -121,9 +122,38 @@ Styling is libadwaita-inspired (palette, 12 px rounded cards, sidebar), using
 bundled Space Grotesk and a Lucide icon font subset. Fallback fonts cover
 scripts Space Grotesk lacks (e.g. Cyrillic device names).
 
-## Plugin hosting (planned)
+## Plugin hosting
 
-Third-party plugins will implement the same `Processor` interface behind a
-plugin host crate. Discovery and scanning will run in a separate process.
-Plugins loaded into `otozaned` run in-process, so a crashing plugin will take
-down the service; no isolation is claimed.
+`otozane-plugins` hosts VST3 effects (Linux bundles,
+`Contents/<arch>-linux/*.so`) through the `vst3` bindings crate.
+
+- **Scanning** looks in `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3` and
+  the `plugin_dirs` setting. Each bundle is loaded by a separate
+  `otozaned --scan BUNDLE` process with a 20 s timeout, so a plugin that crashes
+  or hangs while loading only fails its own entry. Results are cached in
+  `plugins.json` in the config directory; the service scans on first start and
+  on request.
+- **Instances run inside `otozaned`.** There is no crash isolation: a plugin
+  that crashes during processing stops the service (PipeWire then removes the
+  virtual microphone).
+- A chain entry with `kind = "plugin"` names the plugin (format, bundle path,
+  class id). The engine controller asks the service's factory to build it; a
+  plugin that fails to load becomes a pass-through slot and the error is shown
+  on its card.
+- Setup order: initialize, connect component and controller, set bus
+  arrangements (mono/stereo main bus, all buses active, aux inputs get
+  silence), `setupProcessing` (realtime, 32-bit, 1024 frames), then restore
+  state, then `setActive`. State is restored after `setupProcessing` because
+  some plugins (LSP) divide by the sample rate in `setState`.
+- **Parameters** are normalized 0..1 and keyed by VST3 parameter id. Values
+  reach the plugin as one-point parameter queues per block, built in
+  preallocated host objects (no allocation on the audio thread from our side;
+  what the plugin does inside `process` is up to the plugin). Hidden,
+  read-only and bypass parameters are not exposed; bypass uses the chain's
+  crossfade.
+- **State** (component + controller) is stored hex-encoded in the profile and
+  refreshed whenever the profile is saved.
+- **Latency** is read when the plugin is activated (capped at one second).
+  Later `restartComponent` latency changes are not applied yet.
+- Controller calls (parameter text, state) come from service threads under
+  the service lock, not from one dedicated UI thread.

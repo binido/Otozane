@@ -22,10 +22,35 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// `node.name` of the virtual microphone. Never offered as an input.
-pub const VIRTUAL_NODE_NAME: &str = "otozane_microphone";
-pub const VIRTUAL_NODE_DESCRIPTION: &str = "Otozane Microphone";
-const CAPTURE_NODE_NAME: &str = "otozane_capture";
-const OUTPUT_NODE_NAME: &str = "otozane_output";
+/// Node names, prefixed with `$OTOZANE_NODE_PREFIX` when set, so a test
+/// service can run next to a real one without either picking up the other's nodes.
+static NAMES: std::sync::LazyLock<[String; 4]> = std::sync::LazyLock::new(|| {
+    let p = std::env::var("OTOZANE_NODE_PREFIX").unwrap_or_default();
+    let desc = if p.is_empty() {
+        "Otozane Microphone".to_string()
+    } else {
+        format!("Otozane Microphone ({p})")
+    };
+    [
+        format!("{p}otozane_microphone"),
+        desc,
+        format!("{p}otozane_capture"),
+        format!("{p}otozane_output"),
+    ]
+});
+
+pub fn virtual_node_name() -> &'static str {
+    &NAMES[0]
+}
+fn virtual_node_description() -> &'static str {
+    &NAMES[1]
+}
+fn capture_node_name() -> &'static str {
+    &NAMES[2]
+}
+fn output_node_name() -> &'static str {
+    &NAMES[3]
+}
 const OUTPUT_CHANNELS: usize = 2;
 /// Output ring capacity (0.5 s). Excess is discarded, so this bounds memory, not latency.
 const RING_FRAMES: usize = 24_000;
@@ -349,9 +374,9 @@ fn run(
             let Some(name) = props.get(*pw::keys::NODE_NAME) else {
                 return;
             };
-            if name == OUTPUT_NODE_NAME || name == VIRTUAL_NODE_NAME {
+            if name == output_node_name() || name == virtual_node_name() {
                 let mut st = s1.borrow_mut();
-                if name == OUTPUT_NODE_NAME {
+                if name == output_node_name() {
                     st.output_node = Some(obj.id);
                 } else {
                     st.virtual_node = Some(obj.id);
@@ -361,7 +386,7 @@ fn run(
             }
             // Never list our own virtual source: capturing it would feed back.
             if !matches!(class, "Audio/Source" | "Audio/Source/Virtual")
-                || name == VIRTUAL_NODE_NAME
+                || name == virtual_node_name()
             {
                 return;
             }
@@ -494,7 +519,7 @@ fn create_capture(
         properties! {
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Capture",
-            *pw::keys::NODE_NAME => CAPTURE_NODE_NAME,
+            *pw::keys::NODE_NAME => capture_node_name(),
             *pw::keys::NODE_DESCRIPTION => "Otozane Capture",
             *pw::keys::TARGET_OBJECT => target,
             // Never fall back to the default source (which could be our own
@@ -587,8 +612,8 @@ fn create_playback(
         "adapter",
         &properties! {
             "factory.name" => "support.null-audio-sink",
-            *pw::keys::NODE_NAME => VIRTUAL_NODE_NAME,
-            *pw::keys::NODE_DESCRIPTION => VIRTUAL_NODE_DESCRIPTION,
+            *pw::keys::NODE_NAME => virtual_node_name(),
+            *pw::keys::NODE_DESCRIPTION => virtual_node_description(),
             *pw::keys::MEDIA_CLASS => "Audio/Source/Virtual",
             "audio.position" => "FL,FR",
             "monitor.channel-volumes" => "true",
@@ -603,7 +628,7 @@ fn create_playback(
         properties! {
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Playback",
-            *pw::keys::NODE_NAME => OUTPUT_NODE_NAME,
+            *pw::keys::NODE_NAME => output_node_name(),
             *pw::keys::NODE_DESCRIPTION => "Otozane Output",
             // Not autoconnected: `Main::link_output` links it to the virtual
             // microphone, so it can never end up on a real sink.

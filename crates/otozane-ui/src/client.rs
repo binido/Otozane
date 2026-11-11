@@ -1,7 +1,7 @@
 //! Background connection to `otozaned`. The UI thread never blocks on IPC:
 //! it queues requests and reads the latest published state.
 
-use otozane_core::protocol::{Client, Request, Response, Status};
+use otozane_core::protocol::{Client, PluginList, Request, Response, Status};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,6 +19,7 @@ pub struct State {
     pub connection: Connection,
     pub status: Option<Status>,
     pub profiles: Vec<String>,
+    pub plugins: PluginList,
     /// Errors returned by the service, newest last. Drained by the UI.
     pub errors: Vec<String>,
 }
@@ -35,6 +36,7 @@ impl ServiceClient {
             connection: Connection::Connecting,
             status: None,
             profiles: Vec::new(),
+            plugins: PluginList::default(),
             errors: Vec::new(),
         }));
         let st = state.clone();
@@ -85,6 +87,7 @@ fn session(
         match resp {
             Response::Status(st) => s.status = Some(*st),
             Response::Profiles { names } => s.profiles = names,
+            Response::Plugins(list) => s.plugins = *list,
             Response::Error { message } => s.errors.push(message),
             Response::Ok => {}
         }
@@ -115,8 +118,10 @@ fn session(
             }
         }
         if profiles_changed || last_profiles.elapsed() > Duration::from_secs(2) {
-            if let Err(e) = handle(&mut client, &Request::ListProfiles) {
-                return e;
+            for req in [Request::ListProfiles, Request::ListPlugins] {
+                if let Err(e) = handle(&mut client, &req) {
+                    return e;
+                }
             }
             last_profiles = Instant::now();
         }

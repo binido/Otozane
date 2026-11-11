@@ -5,19 +5,20 @@ use crate::icons;
 use crate::theme;
 use crate::widgets::{self, icon, icon_text};
 use egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
-use otozane_core::config::{EffectConfig, next_id};
+use otozane_core::config::{EffectConfig, PluginRef, next_id};
 use otozane_core::effects::EffectKind;
 use otozane_core::param::{ParamKind, ParamSpec};
-use otozane_core::protocol::Request;
+use otozane_core::protocol::{EffectInfo, Request};
 
 enum Action {
     Move(usize, usize),
     Remove(usize),
     Add(EffectKind),
+    AddPlugin(PluginRef),
 }
 
 pub fn page(app: &mut App, ui: &mut Ui) {
-    let Some(meters) = app.status().map(|s| s.meters.clone()) else {
+    let Some((meters, infos)) = app.status().map(|s| (s.meters.clone(), s.effects.clone())) else {
         return;
     };
     let p = theme::current(ui.ctx());
@@ -30,11 +31,19 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                         app_action(app, Action::Add(kind));
                     }
                 }
+                ui.separator();
+                if ui.button(icon_text(icons::PUZZLE, "Plugin...")).clicked() {
+                    app.browser.get_or_insert_with(String::new);
+                }
             });
         });
     });
     ui.label(RichText::new("Audio flows from top to bottom. Drag the handle to reorder.").weak());
     ui.add_space(8.0);
+    if let Some(a) = browser(app, ui) {
+        app_action(app, a);
+        app.browser = None;
+    }
 
     if app.chain.is_empty() {
         widgets::card(ui, |ui| {
@@ -68,8 +77,9 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                     } else {
                         icons::CHEVRON_RIGHT
                     };
-                    let title = RichText::new(format!("{chevron}  {}", kind.name()))
-                        .family(egui::FontFamily::Name(theme::MEDIUM.into()));
+                    let title =
+                        RichText::new(format!("{chevron}  {}", app.chain[i].display_name()))
+                            .family(egui::FontFamily::Name(theme::MEDIUM.into()));
                     if ui
                         .add(egui::Label::new(title).sense(egui::Sense::click()))
                         .clicked()
@@ -122,9 +132,17 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                         }
                     });
                 });
+                let info = infos.get(i).cloned().unwrap_or_default();
+                if let Some(e) = &info.error {
+                    ui.label(RichText::new(icon_text(icons::CIRCLE_ALERT, e)).color(p.error));
+                }
                 if expanded {
                     ui.add_space(4.0);
-                    params(app, ui, i);
+                    if kind == EffectKind::Plugin {
+                        plugin_params(app, ui, i, &info);
+                    } else {
+                        params(app, ui, i);
+                    }
                 }
             })
             .response;
@@ -154,6 +172,10 @@ fn app_action(app: &mut App, action: Action) {
         }
         Action::Add(kind) => {
             let e = EffectConfig::new(next_id(&chain), kind);
+            chain.push(e);
+        }
+        Action::AddPlugin(plugin) => {
+            let e = EffectConfig::new_plugin(next_id(&chain), plugin);
             chain.push(e);
         }
         _ => return,
@@ -193,6 +215,173 @@ fn params(app: &mut App, ui: &mut Ui, i: usize) {
             key: key.to_string(),
             value,
         });
+    }
+}
+
+/// Plugin browser: search the last scan result and add an effect to the chain.
+fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
+    let mut query = app.browser.clone()?;
+    let p = theme::current(ui.ctx());
+    let mut action = None;
+    let mut close = false;
+    widgets::card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(icon(icons::SEARCH, 16.0).color(p.text_weak));
+            ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text("Search plugins by name, vendor or category")
+                    .desired_width(ui.available_width() - 150.0),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(icon(icons::X, 15.0))
+                    .on_hover_text("Close")
+                    .clicked()
+                {
+                    close = true;
+                }
+                let scanning = app.plugins.scanning;
+                let label = if scanning { "Scanning..." } else { "Rescan" };
+                if ui
+                    .add_enabled(
+                        !scanning,
+                        egui::Button::new(icon_text(icons::REFRESH_CW, label)),
+                    )
+                    .on_hover_text(app.plugins.dirs.join("\n"))
+                    .clicked()
+                {
+                    app.send(Request::ScanPlugins);
+                }
+            });
+        });
+        ui.add_space(6.0);
+        let q = query.to_lowercase();
+        let matches: Vec<_> = app
+            .plugins
+            .plugins
+            .iter()
+            .filter(|i| {
+                q.split_whitespace().all(|w| {
+                    i.plugin.name.to_lowercase().contains(w)
+                        || i.plugin.vendor.to_lowercase().contains(w)
+                        || i.category.to_lowercase().contains(w)
+                })
+            })
+            .collect();
+        if app.plugins.plugins.is_empty() {
+            ui.label(
+                RichText::new(if app.plugins.scanning {
+                    "Looking for VST3 plugins..."
+                } else {
+                    "No VST3 plugins found. Install some (e.g. lsp-plugins-vst3) and press Rescan."
+                })
+                .weak(),
+            );
+        }
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for info in matches {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(&info.plugin.name);
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} \u{b7} {} \u{b7} {}",
+                                    info.plugin.vendor,
+                                    info.plugin.format.name(),
+                                    info.category
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(icon_text(icons::PLUS, "Add")).clicked() {
+                                action = Some(Action::AddPlugin(info.plugin.clone()));
+                            }
+                        });
+                    });
+                    ui.separator();
+                }
+            });
+        if !app.plugins.errors.is_empty() {
+            egui::CollapsingHeader::new(
+                RichText::new(format!(
+                    "{} files could not be loaded",
+                    app.plugins.errors.len()
+                ))
+                .color(p.warning),
+            )
+            .show(ui, |ui| {
+                for (path, why) in &app.plugins.errors {
+                    ui.label(RichText::new(format!("{path}: {why}")).small());
+                }
+            });
+        }
+    });
+    app.browser = (!close).then_some(query);
+    action
+}
+
+/// Plugin parameters as reported by the service. Values are normalized (0..1).
+fn plugin_params(app: &mut App, ui: &mut Ui, i: usize, info: &EffectInfo) {
+    let id = app.chain[i].id;
+    if info.params.is_empty() {
+        if info.error.is_none() {
+            ui.label(RichText::new("This plugin has no adjustable parameters.").weak());
+        }
+        return;
+    }
+    let mut changes = Vec::new();
+    egui::ScrollArea::vertical()
+        .id_salt(("plugin-params", id))
+        .max_height(360.0)
+        .show(ui, |ui| {
+            egui::Grid::new(("pparams", id))
+                .num_columns(3)
+                .spacing([18.0, 8.0])
+                .show(ui, |ui| {
+                    for (j, d) in info.params.iter().enumerate() {
+                        let remote = info.values.get(j).copied().unwrap_or(d.default);
+                        let mut v = app.chain[i].params.get(&d.key).copied().unwrap_or(remote);
+                        ui.label(&d.name);
+                        let changed = if d.steps == 1 {
+                            let mut on = v >= 0.5;
+                            let c = widgets::switch(ui, &mut on).changed();
+                            v = if on { 1.0 } else { 0.0 };
+                            c
+                        } else if !d.choices.is_empty() {
+                            let n = d.steps as f32;
+                            let mut idx = (v * n).round() as usize;
+                            let before = idx;
+                            egui::ComboBox::from_id_salt(("pchoice", id, j))
+                                .selected_text(d.choices.get(idx).map_or("?", |s| s.as_str()))
+                                .show_ui(ui, |ui| {
+                                    for (k, l) in d.choices.iter().enumerate() {
+                                        ui.selectable_value(&mut idx, k, l);
+                                    }
+                                });
+                            v = idx as f32 / n;
+                            idx != before
+                        } else {
+                            ui.add(egui::Slider::new(&mut v, 0.0..=1.0).show_value(false))
+                                .changed()
+                        };
+                        // The plugin formats the value; it lags one status poll behind edits.
+                        let text = info.texts.get(j).map_or("", |s| s.as_str());
+                        ui.label(RichText::new(format!("{text} {}", d.unit)).weak());
+                        ui.end_row();
+                        if changed {
+                            changes.push((d.key.clone(), v));
+                        }
+                    }
+                });
+        });
+    for (key, value) in changes {
+        app.chain[i].params.insert(key.clone(), value);
+        app.edited();
+        app.send(Request::SetParam { id, key, value });
     }
 }
 

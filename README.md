@@ -25,7 +25,12 @@ applications' audio, or your default devices.
 - Background service (`otozaned`); the GUI (`otozane`) is optional.
 - egui desktop app with light/dark/system themes, level meters and diagnostics.
 
-Not implemented yet: third-party plugin hosting (VST3, JSFX, CLAP). See [PLAN.md](PLAN.md).
+- VST3 effect plugins (Linux builds, e.g. `lsp-plugins-vst3`): plugin browser
+  with search, parameters, state saved in profiles. Plugins are scanned in
+  separate processes, but run inside the service: a plugin that crashes while
+  processing stops the service. Plugin editor windows are not supported.
+
+Not implemented yet: JSFX, CLAP, plugin editor windows. See [PLAN.md](PLAN.md).
 
 ## Requirements
 

@@ -8,6 +8,13 @@ pub mod rnnoise;
 use crate::param::ParamSpec;
 use serde::{Deserialize, Serialize};
 
+/// Processor that leaves audio unchanged (used for plugins that failed to load).
+pub struct Passthrough;
+
+impl Processor for Passthrough {
+    fn process(&mut self, _: &mut [&mut [f32]], _: &[f32]) {}
+}
+
 /// Real-time audio processor.
 ///
 /// `process` is called on the audio thread. Implementations must not
@@ -38,6 +45,8 @@ pub enum EffectKind {
     Equalizer,
     Compressor,
     Limiter,
+    /// A hosted third-party plugin; see `EffectConfig::plugin`.
+    Plugin,
 }
 
 impl EffectKind {
@@ -58,6 +67,7 @@ impl EffectKind {
             EffectKind::Equalizer => "Equalizer",
             EffectKind::Compressor => "Compressor",
             EffectKind::Limiter => "Limiter",
+            EffectKind::Plugin => "Plugin",
         }
     }
 
@@ -69,13 +79,15 @@ impl EffectKind {
             EffectKind::Equalizer => eq::PARAMS,
             EffectKind::Compressor => dynamics::COMPRESSOR_PARAMS,
             EffectKind::Limiter => dynamics::LIMITER_PARAMS,
+            // Plugin parameters are only known after loading.
+            EffectKind::Plugin => &[],
         }
     }
 
     /// Label and unit of the per-effect meter, if the effect reports one.
     pub fn meter(self) -> Option<(&'static str, &'static str)> {
         match self {
-            EffectKind::Gain | EffectKind::Equalizer => None,
+            EffectKind::Gain | EffectKind::Equalizer | EffectKind::Plugin => None,
             EffectKind::Gate => Some(("Gain", "dB")),
             EffectKind::Compressor | EffectKind::Limiter => Some(("Reduction", "dB")),
             EffectKind::Rnnoise => Some(("Voice", "%")),
@@ -92,6 +104,8 @@ impl EffectKind {
             EffectKind::Equalizer => Box::new(eq::Equalizer::new(sample_rate, channels)),
             EffectKind::Compressor => Box::new(dynamics::Compressor::new(sample_rate)),
             EffectKind::Limiter => Box::new(dynamics::Limiter::new(sample_rate, channels)),
+            // Plugins are created by the host through `engine::Controller::set_chain`.
+            EffectKind::Plugin => Box::new(Passthrough),
         }
     }
 }

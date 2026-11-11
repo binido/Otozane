@@ -79,6 +79,8 @@ pub struct App {
     toasts: Vec<(String, Instant)>,
     /// Effect cards the user collapsed; all others show their parameters.
     pub collapsed: std::collections::HashSet<u64>,
+    pub plugins: otozane_core::protocol::PluginList,
+    pub browser: Option<String>,
     new_profile: String,
     renaming: Option<(String, String)>,
 }
@@ -95,7 +97,7 @@ impl App {
         Self {
             client: ServiceClient::spawn(cc.egui_ctx.clone()),
             page: match std::env::var("OTOZANE_PAGE").as_deref() {
-                Ok("effects") => Page::Effects,
+                Ok("effects" | "plugins") => Page::Effects,
                 Ok("profiles") => Page::Profiles,
                 Ok("settings") => Page::Settings,
                 _ => Page::Overview,
@@ -110,6 +112,9 @@ impl App {
             last_frame: Instant::now(),
             toasts: Vec::new(),
             collapsed: Default::default(),
+            plugins: Default::default(),
+            // Dev: OTOZANE_PAGE=plugins opens the plugin browser on the effects page.
+            browser: (std::env::var("OTOZANE_PAGE").as_deref() == Ok("plugins")).then(String::new),
             new_profile: String::new(),
             renaming: None,
         }
@@ -133,6 +138,7 @@ impl App {
             let mut s = self.client.state.lock().unwrap();
             self.connection = s.connection.clone();
             self.profiles = s.profiles.clone();
+            self.plugins = s.plugins.clone();
             (s.status.clone(), std::mem::take(&mut s.errors))
         };
         let now = Instant::now();

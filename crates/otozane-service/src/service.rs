@@ -2,10 +2,14 @@
 
 use crate::store::{Store, validate_name};
 use otozane_core::config::{EffectConfig, Profile, Settings};
-use otozane_core::engine::{ControlError, Controller};
-use otozane_core::protocol::{self, Diagnostics, Request, Response};
+use otozane_core::effects::EffectKind;
+use otozane_core::engine::{ControlError, Controller, External};
+use otozane_core::protocol::{self, Diagnostics, EffectInfo, PluginList, Request, Response};
 use otozane_pipewire::{Backend, CaptureState};
+use otozane_plugins::PluginControl;
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub struct Service {
@@ -14,6 +18,9 @@ pub struct Service {
     pub store: Store,
     pub settings: Settings,
     pub chain: Vec<EffectConfig>,
+    /// Control halves of loaded plugins, by effect id.
+    plugins: HashMap<u64, Box<dyn PluginControl>>,
+    scan: Arc<Mutex<PluginList>>,
     dirty_settings: bool,
     dirty_profile: bool,
     pub quit: bool,
@@ -26,19 +33,19 @@ fn err(e: impl std::fmt::Display) -> Response {
 }
 
 impl Service {
-    pub fn new(
-        ctl: Controller,
-        backend: Backend,
-        store: Store,
-        settings: Settings,
-        chain: Vec<EffectConfig>,
-    ) -> Self {
+    pub fn new(ctl: Controller, backend: Backend, store: Store, settings: Settings) -> Self {
+        let scan = std::fs::read_to_string(store.dir().join("plugins.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         Self {
             ctl,
             backend,
             store,
             settings,
-            chain,
+            chain: Vec::new(),
+            plugins: HashMap::new(),
+            scan: Arc::new(Mutex::new(scan)),
             dirty_settings: false,
             dirty_profile: false,
             quit: false,
@@ -53,6 +60,7 @@ impl Service {
 
     pub fn flush(&mut self) {
         if self.dirty_profile {
+            self.capture_plugin_states();
             let p = Profile {
                 chain: self.chain.clone(),
             };
@@ -69,7 +77,19 @@ impl Service {
         }
     }
 
-    fn apply_chain(&mut self, chain: Vec<EffectConfig>) -> Result<(), String> {
+    /// Copies each plugin's current state into the chain configuration.
+    fn capture_plugin_states(&mut self) {
+        for e in &mut self.chain {
+            if let Some(c) = self.plugins.get(&e.id) {
+                match c.save_state() {
+                    Ok(b) => e.state = Some(otozane_plugins::encode_state(&b)),
+                    Err(err) => eprintln!("{}: {err}", e.display_name()),
+                }
+            }
+        }
+    }
+
+    pub fn apply_chain(&mut self, chain: Vec<EffectConfig>) -> Result<(), String> {
         let mut ids = std::collections::HashSet::new();
         if !chain.iter().all(|e| ids.insert(e.id)) {
             return Err("effect ids must be unique".into());
@@ -77,7 +97,10 @@ impl Service {
         // Fade out effects that are about to be removed so removal does not click.
         let mut faded = false;
         for old in &self.chain {
-            if old.enabled && !chain.iter().any(|e| e.id == old.id && e.kind == old.kind) {
+            let kept = chain
+                .iter()
+                .any(|e| e.id == old.id && e.kind == old.kind && e.plugin == old.plugin);
+            if old.enabled && !kept {
                 let _ = self.ctl.set_enabled(old.id, false);
                 faded = true;
             }
@@ -87,9 +110,29 @@ impl Service {
         }
         // The audio thread takes updates once per cycle (or per 100 ms pump
         // when idle), so a burst of edits may briefly find the queue full.
+        let channels = self.settings.channels as usize;
+        let plugins = &mut self.plugins;
+        let mut factory = |cfg: &EffectConfig| -> Result<External, String> {
+            let plugin = cfg.plugin.as_ref().ok_or("plugin entry without a plugin")?;
+            let state = cfg.state.as_deref().and_then(otozane_plugins::decode_state);
+            let inst = otozane_plugins::instantiate(
+                plugin,
+                state.as_deref(),
+                otozane_core::SAMPLE_RATE as f32,
+                channels,
+                otozane_core::engine::MAX_BLOCK,
+            )
+            .map_err(|e| format!("{}: {e}", plugin.name))?;
+            plugins.insert(cfg.id, inst.control);
+            Ok(External {
+                processor: inst.processor,
+                params: inst.params,
+                values: inst.values,
+            })
+        };
         let mut tries = 0;
         loop {
-            match self.ctl.set_chain(&chain) {
+            match self.ctl.set_chain(&chain, &mut factory) {
                 Err(ControlError::Busy) if tries < 60 => {
                     tries += 1;
                     std::thread::sleep(Duration::from_millis(5));
@@ -97,6 +140,11 @@ impl Service {
                 r => break r.map_err(|e| e.to_string())?,
             }
         }
+        self.plugins.retain(|id, _| {
+            chain
+                .iter()
+                .any(|e| e.id == *id && e.kind == EffectKind::Plugin)
+        });
         self.chain = chain;
         self.dirty_profile = true;
         Ok(())
@@ -117,7 +165,7 @@ impl Service {
         match req {
             Request::Status => Response::Status(Box::new(self.status())),
             Request::SetInput { device } => {
-                if device.as_deref() == Some(otozane_pipewire::VIRTUAL_NODE_NAME) {
+                if device.as_deref() == Some(otozane_pipewire::virtual_node_name()) {
                     return err("Otozane Microphone cannot be its own input");
                 }
                 self.backend.set_input(device.clone());
@@ -140,6 +188,11 @@ impl Service {
             },
             Request::SetParam { id, key, value } => match self.ctl.set_param(id, &key, value) {
                 Ok(v) => {
+                    if let Some(c) = self.plugins.get(&id)
+                        && let Some(i) = self.ctl.params(id).iter().position(|p| p.key == key)
+                    {
+                        c.set_value(i, v);
+                    }
                     if let Some(e) = self.chain.iter_mut().find(|e| e.id == id) {
                         e.params.insert(key, v);
                     }
@@ -198,11 +251,59 @@ impl Service {
                     Err(e) => err(e),
                 }
             }
+            Request::ListPlugins => Response::Plugins(Box::new(self.scan.lock().unwrap().clone())),
+            Request::ScanPlugins => {
+                self.start_scan();
+                Response::Ok
+            }
             Request::Shutdown => {
                 self.quit = true;
                 Response::Ok
             }
         }
+    }
+
+    /// Rescans plugin directories on a background thread. Each bundle is
+    /// loaded by a separate `otozaned --scan` process.
+    pub fn start_scan(&self) {
+        {
+            let mut s = self.scan.lock().unwrap();
+            if s.scanning {
+                return;
+            }
+            s.scanning = true;
+        }
+        let scan = self.scan.clone();
+        let dirs = otozane_plugins::search_dirs(&self.settings.plugin_dirs);
+        let cache = self.store.dir().join("plugins.json");
+        std::thread::spawn(move || {
+            let exe = std::env::current_exe().unwrap_or_else(|_| "otozaned".into());
+            let list = otozane_plugins::scan_dirs(&dirs, &exe);
+            if let Ok(json) = serde_json::to_string_pretty(&list) {
+                let _ = std::fs::write(&cache, json);
+            }
+            *scan.lock().unwrap() = list;
+        });
+    }
+
+    fn effect_info(&self, e: &EffectConfig) -> EffectInfo {
+        let mut info = EffectInfo {
+            error: self.ctl.effect_error(e.id),
+            ..Default::default()
+        };
+        if e.kind == EffectKind::Plugin {
+            info.params = self.ctl.params(e.id).to_vec();
+            info.values = self.ctl.values(e.id);
+            if let Some(c) = self.plugins.get(&e.id) {
+                info.texts = info
+                    .values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| c.value_text(i, v))
+                    .collect();
+            }
+        }
+        info
     }
 
     fn status(&self) -> protocol::Status {
@@ -234,6 +335,7 @@ impl Service {
             input_peak: shared.input_peak.swap(0.0),
             output_peak: shared.output_peak.swap(0.0),
             meters: self.chain.iter().map(|e| self.ctl.meter(e.id)).collect(),
+            effects: self.chain.iter().map(|e| self.effect_info(e)).collect(),
             chain: self.chain.clone(),
             active_profile: self.settings.active_profile.clone(),
             diagnostics: Diagnostics {

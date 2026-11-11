@@ -22,7 +22,20 @@ fn main() {
     if let Some(arg) = std::env::args().nth(1) {
         match arg.as_str() {
             "--version" => println!("otozaned {}", env!("CARGO_PKG_VERSION")),
-            _ => println!("Usage: otozaned [--version]\n\nRuns the Otozane audio service."),
+            // Plugin scan helper, started by the service once per bundle.
+            "--scan" => {
+                let path = std::env::args().nth(2).unwrap_or_default();
+                match otozane_plugins::scan_bundle(std::path::Path::new(&path)) {
+                    Ok(list) => println!("{}", serde_json::to_string(&list).unwrap_or_default()),
+                    Err(e) => {
+                        println!("error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            _ => println!(
+                "Usage: otozaned [--version | --scan BUNDLE]\n\nRuns the Otozane audio service."
+            ),
         }
         return;
     }
@@ -54,17 +67,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Profile::default()
         });
 
-    let (mut ctl, eng) = engine::new(SAMPLE_RATE as f32, settings.channels as usize);
-    ctl.set_chain(&profile.chain)?;
+    let (ctl, eng) = engine::new(SAMPLE_RATE as f32, settings.channels as usize);
     ctl.shared
         .processing_enabled
         .store(settings.processing_enabled, Ordering::Relaxed);
     let backend = otozane_pipewire::Backend::start(eng, settings.input_device.clone());
-    let mut svc = Service::new(ctl, backend, store, settings, profile.chain);
-    // Make sure the active profile exists on disk.
-    svc.handle(Request::SetChain {
-        chain: svc.chain.clone(),
-    });
+    let mut svc = Service::new(ctl, backend, store, settings);
+    // Also makes sure the active profile exists on disk.
+    svc.apply_chain(profile.chain)?;
+    if !svc.store.dir().join("plugins.json").exists() {
+        svc.start_scan();
+    }
     let svc = Arc::new(Mutex::new(svc));
     eprintln!(
         "otozaned {} listening on {}",

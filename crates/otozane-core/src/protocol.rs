@@ -1,7 +1,8 @@
 //! IPC protocol between `otozaned` and clients: one JSON object per line in
 //! each direction over a Unix socket. Each request gets exactly one response.
 
-use crate::config::EffectConfig;
+use crate::config::{EffectConfig, PluginRef};
+use crate::param::ParamDesc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +44,10 @@ pub enum Request {
         from: String,
         to: String,
     },
+    /// Returns the last plugin scan result.
+    ListPlugins,
+    /// Rescans the plugin directories in the background.
+    ScanPlugins,
     Shutdown,
 }
 
@@ -53,6 +58,39 @@ pub enum Response {
     Error { message: String },
     Status(Box<Status>),
     Profiles { names: Vec<String> },
+    Plugins(Box<PluginList>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginInfo {
+    pub plugin: PluginRef,
+    /// Category path, e.g. `Fx|Dynamics|Mono`.
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginList {
+    pub scanning: bool,
+    pub dirs: Vec<String>,
+    pub plugins: Vec<PluginInfo>,
+    /// Files that could not be scanned, with the reason.
+    pub errors: Vec<(String, String)>,
+}
+
+/// Runtime details of a chain entry that the configuration does not hold.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EffectInfo {
+    /// Why the effect is inactive (e.g. the plugin failed to load).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Plugin parameters (empty for built-in effects, which use their static specs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ParamDesc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<f32>,
+    /// Display text for each value, as formatted by the plugin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,12 +148,19 @@ pub struct Status {
     pub chain: Vec<EffectConfig>,
     /// Per-effect meter values, parallel to `chain`.
     pub meters: Vec<f32>,
+    /// Per-effect runtime details, parallel to `chain`.
+    #[serde(default)]
+    pub effects: Vec<EffectInfo>,
     pub active_profile: String,
     pub diagnostics: Diagnostics,
 }
 
-/// Path of the service socket: `$XDG_RUNTIME_DIR/otozane.sock`.
+/// Path of the service socket: `$OTOZANE_SOCKET` if set (used by tests),
+/// else `$XDG_RUNTIME_DIR/otozane.sock`.
 pub fn socket_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("OTOZANE_SOCKET") {
+        return p.into();
+    }
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(dir) => std::path::PathBuf::from(dir).join("otozane.sock"),
         // SAFETY: getuid has no preconditions and cannot fail.

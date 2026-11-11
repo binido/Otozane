@@ -9,5 +9,7 @@
 | [egui / eframe](https://github.com/emilk/egui) | Desktop UI | MIT OR Apache-2.0 |
 | [rtrb](https://github.com/mgeier/rtrb) | Lock-free SPSC ring buffers | MIT OR Apache-2.0 |
 | serde, serde_json, toml | Configuration and IPC | MIT OR Apache-2.0 |
+| [vst3](https://github.com/coupler-rs/vst3-rs) (vst3-rs 0.3) | VST3 interface bindings for plugin hosting | MIT OR Apache-2.0 |
+| [libloading](https://github.com/nagisa/rust_libloading) | Loading plugin libraries | ISC |
 
 No third-party audio plugins are bundled.

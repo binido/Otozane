@@ -14,3 +14,5 @@ otozane-core.workspace = true
 otozane-pipewire.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+otozane-plugins = { path = "../otozane-plugins" }
+serde.workspace = true

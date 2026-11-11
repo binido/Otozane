@@ -76,3 +76,61 @@ impl ParamSpec {
         }
     }
 }
+
+/// Owned parameter description. Built-in effects use static [`ParamSpec`]s;
+/// hosted plugins only know their parameters at runtime, so the controller
+/// and the IPC protocol work with this type.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ParamDesc {
+    pub key: String,
+    pub name: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+    #[serde(default)]
+    pub unit: String,
+    /// Number of discrete steps between min and max (0 = continuous).
+    #[serde(default)]
+    pub steps: u32,
+    #[serde(default)]
+    pub log: bool,
+    /// Labels for each discrete value, when known.
+    #[serde(default)]
+    pub choices: Vec<String>,
+}
+
+impl ParamDesc {
+    pub fn clamp(&self, v: f32) -> f32 {
+        if v.is_nan() {
+            self.default
+        } else {
+            v.clamp(self.min, self.max)
+        }
+    }
+}
+
+impl From<&ParamSpec> for ParamDesc {
+    fn from(s: &ParamSpec) -> Self {
+        let (steps, log, choices) = match s.kind {
+            ParamKind::Continuous => (0, false, Vec::new()),
+            ParamKind::Logarithmic => (0, true, Vec::new()),
+            ParamKind::Toggle => (1, false, Vec::new()),
+            ParamKind::Choice(labels) => (
+                labels.len().saturating_sub(1) as u32,
+                false,
+                labels.iter().map(|l| l.to_string()).collect(),
+            ),
+        };
+        Self {
+            key: s.key.into(),
+            name: s.name.into(),
+            min: s.min,
+            max: s.max,
+            default: s.default,
+            unit: s.unit.into(),
+            steps,
+            log,
+            choices,
+        }
+    }
+}

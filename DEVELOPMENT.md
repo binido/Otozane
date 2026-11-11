@@ -22,6 +22,9 @@ XDG_CONFIG_HOME=/tmp/otozane-dev ./target/debug/otozaned
 ```
 
 Only one service can run per user (the socket is `$XDG_RUNTIME_DIR/otozane.sock`).
+To run a second, test service next to a real one, set `OTOZANE_SOCKET` (socket
+path, also used by the UI and `scripts/ipc.py`) and `OTOZANE_NODE_PREFIX`
+(prefix for its PipeWire node names). `scripts/e2e.sh` does both.
 
 ## Scripts
 
@@ -51,6 +54,20 @@ python3 scripts/ipc.py '{"cmd":"set_param","id":2,"key":"gain","value":3}'
 
 Note: when EasyEffects processes all inputs/outputs, test streams must opt out
 of being moved (`node.dont-move = true`), which the scripts do.
+
+## Plugins
+
+```sh
+# List the effects in a bundle (loads it in this process)
+cargo run -p otozane-plugins --example scan -- /usr/lib/vst3/lsp-plugins.vst3
+# Load one, print its parameters, process a sine, round-trip its state
+cargo run -p otozane-plugins --example probe -- /usr/lib/vst3/lsp-plugins.vst3 "Limiter Mono" 5=0.3
+# End to end with a plugin in the chain (output gain about -38 dB -> ~0.003)
+scripts/e2e.sh "" '[{"id":1,"kind":"plugin","params":{"409613204":0.3},"plugin":{"format":"vst3","path":"/usr/lib/vst3/lsp-plugins.vst3","uid":"6473702062316D20202020206A7A357A","name":"Limiter Mono"}}]'
+```
+
+`tests/lsp.rs` runs against LSP plugins when `lsp-plugins-vst3` is installed
+and skips otherwise.
 
 ## Adding an effect
 
