@@ -114,12 +114,16 @@ fn run(rx: Receiver<Request>, state: Arc<Mutex<State>>, ctx: egui::Context) {
                 let mut s = state.lock().unwrap();
                 s.connection = Connection::Disconnected(err.to_string());
                 s.status = None;
-                // Requests queued while disconnected are stale.
-                while rx.try_recv().is_ok() {}
             }
-            Err(e) => {
-                state.lock().unwrap().connection = Connection::Disconnected(e.to_string());
-                while rx.try_recv().is_ok() {}
+            Err(e) => state.lock().unwrap().connection = Connection::Disconnected(e.to_string()),
+        }
+        // Requests queued while disconnected are stale. Stops once the window
+        // (and its sender) is gone.
+        loop {
+            match rx.try_recv() {
+                Ok(_) => {}
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
             }
         }
         ctx.request_repaint();
@@ -208,6 +212,46 @@ fn unit_path() -> Option<std::path::PathBuf> {
     Some(config_home()?.join("systemd/user/otozane.service"))
 }
 
+const DESKTOP: &str = include_str!("../../../packaging/otozane.desktop");
+
+fn login_entry_path() -> Option<std::path::PathBuf> {
+    Some(config_home()?.join("autostart/otozane.desktop"))
+}
+
+/// The desktop entry with `Exec` starting `exe` hidden in the tray.
+fn login_entry_text(exe: &std::path::Path) -> String {
+    let mut quoted = String::from("\"");
+    for c in exe.display().to_string().chars() {
+        match c {
+            // Escaped for the quoted argument, then again as a string value.
+            '"' | '`' | '$' => quoted.extend(['\\', '\\', c]),
+            '\\' => quoted.push_str(r"\\\\"),
+            '%' => quoted.push_str("%%"),
+            _ => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    DESKTOP.replace("Exec=otozane\n", &format!("Exec={quoted} --hidden\n"))
+}
+
+/// Whether the window starts hidden in the tray at login.
+pub fn login_window_enabled() -> bool {
+    login_entry_path().is_some_and(|p| p.exists())
+}
+
+/// Writes or removes the XDG autostart entry for this executable.
+pub fn set_login_window(on: bool) -> std::io::Result<()> {
+    let path = login_entry_path().ok_or_else(|| std::io::Error::other("HOME is not set"))?;
+    if !on {
+        return std::fs::remove_file(&path).or_else(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(e),
+        });
+    }
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, login_entry_text(&std::env::current_exe()?))
+}
+
 /// The unit file with `ExecStart` pointing at `service`.
 fn unit_text(service: Option<&std::path::Path>) -> String {
     match service {
@@ -288,5 +332,14 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains(super::UNIT_EXEC));
+    }
+
+    #[test]
+    fn login_entry_starts_hidden() {
+        let text = super::login_entry_text(std::path::Path::new("/opt/a \"b\"/50%/otozane"));
+        assert!(
+            text.contains("\nExec=\"/opt/a \\\\\"b\\\\\"/50%%/otozane\" --hidden\n"),
+            "{text}"
+        );
     }
 }

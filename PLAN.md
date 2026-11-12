@@ -20,7 +20,8 @@ Status legend: [x] done, [~] partial, [ ] not started.
 4. [x] DSP and profiles: gate, parametric EQ (with response curve), compressor, limiter, chain editor with drag-and-drop, profile management.
 5. [~] Plugin hosting. Done: VST3 (scan in a separate process per bundle, load, process, parameters, state in profiles, bypass, latency, load errors shown on the effect card, plugin browser). Verified with LSP plugins (`tests/lsp.rs`, and `scripts/e2e.sh` with LSP Limiter). Open: JSFX via ysfx (source in `third_party/ysfx`, not built yet); latency changes reported by a plugin at runtime are ignored until it is re-added; plugin editor windows.
 6. [~] Service hardening: done: IPC, single instance, systemd user unit with a "Start with session" switch in the UI (verified: enable, start, restart after kill -9), device unplug/replug recovery, PipeWire reconnect loop, diagnostics, coexistence with a running EasyEffects. Open: verify behavior across suspend/resume and PipeWire restarts on a real session.
-7. [ ] Expansion: CLAP, plugin editors, packaging (PKGBUILD), macOS backend.
+7. [x] Tray and login: StatusNotifierItem tray via `ksni` (service state, show/hide, quit). Closing the window hides it; reopening reuses the eframe event loop. Optional XDG autostart entry (`--hidden`, tray only) behind a Settings switch. Verified on niri with Noctalia by driving the tray over D-Bus (show, hide, repeated show, quit). Not verified: an actual logout/login with the entry.
+8. [ ] Expansion: CLAP, plugin editors, packaging (PKGBUILD), macOS backend.
 
 ## Next steps
 

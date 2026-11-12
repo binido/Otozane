@@ -26,6 +26,9 @@ applications' audio, or your default devices.
 - Profiles: create, rename, delete, switch, export to and import from `.toml` files. The active profile saves automatically.
 - Background service (`otozaned`); the GUI (`otozane`) is optional.
 - egui desktop app with light/dark/system themes, level meters and diagnostics.
+- Tray icon (StatusNotifierItem, needs a tray host such as Waybar, KDE or
+  Noctalia): shows the service state, shows or hides the window, quits the app.
+  With a tray, closing the window hides it; the service keeps running either way.
 
 - VST3 effect plugins (Linux builds, e.g. `lsp-plugins-vst3`): plugin browser
   with search, parameters, state saved in profiles. Plugins are scanned in
@@ -66,6 +69,12 @@ systemctl --user enable --now otozane
 ```
 
 Nothing is enabled until you do one of these.
+
+### Open the app in the tray at login (optional)
+
+Turn on **Settings → Open in tray at login**. It writes
+`~/.config/autostart/otozane.desktop`, which starts the app with `--hidden`
+(tray only, no window). The switch is available only while a tray is running.
 
 ## Configuration
 
