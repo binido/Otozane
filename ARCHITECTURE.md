@@ -130,9 +130,9 @@ forwards requests; the render loop never blocks on IPC and never processes
 audio. Edits apply to a local copy immediately, and incoming status does not
 overwrite it for 500 ms after the last edit, so sliders stay responsive.
 
-Styling is libadwaita-inspired (palette, 12 px rounded cards, sidebar), using
-bundled Space Grotesk and a Lucide icon font subset. Fallback fonts cover
-scripts Space Grotesk lacks (e.g. Cyrillic device names).
+Styling is monochrome Material 3 (fixed palette, tonal surfaces, M3 controls), using
+bundled Roboto and a Lucide icon font subset. egui's default fonts stay as
+fallbacks for scripts Roboto lacks.
 
 ## Plugin hosting
 

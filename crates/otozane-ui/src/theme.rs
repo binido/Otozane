@@ -1,4 +1,4 @@
-//! GTK/libadwaita-inspired styling implemented with egui visuals.
+//! Monochrome Material 3 styling implemented with egui visuals.
 
 use egui::{
     Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Margin, Stroke, Style, Theme,
@@ -111,20 +111,20 @@ fn fonts() -> FontDefinitions {
     };
     add(
         &mut f,
-        "SpaceGrotesk",
-        include_bytes!("../assets/fonts/SpaceGrotesk-Regular.ttf"),
+        "Roboto",
+        include_bytes!("../assets/fonts/Roboto-Regular.ttf"),
     );
     add(
         &mut f,
-        "SpaceGrotesk-Medium",
-        include_bytes!("../assets/fonts/SpaceGrotesk-Medium.ttf"),
+        "Roboto-Medium",
+        include_bytes!("../assets/fonts/Roboto-Medium.ttf"),
     );
     add(
         &mut f,
         "Lucide",
         include_bytes!("../assets/fonts/lucide-subset.ttf"),
     );
-    // egui's default fonts stay as fallbacks (e.g. Cyrillic device names).
+    // egui's default fonts stay as fallbacks (e.g. CJK device names).
     let defaults = f.families[&FontFamily::Proportional].clone();
     let family = |primary: &str| {
         let mut v = vec![primary.to_string(), "Lucide".to_string()];
@@ -132,10 +132,10 @@ fn fonts() -> FontDefinitions {
         v
     };
     f.families
-        .insert(FontFamily::Proportional, family("SpaceGrotesk"));
+        .insert(FontFamily::Proportional, family("Roboto"));
     f.families.insert(
         FontFamily::Name(MEDIUM.into()),
-        family("SpaceGrotesk-Medium"),
+        family("Roboto-Medium"),
     );
     f.families
         .get_mut(&FontFamily::Monospace)
