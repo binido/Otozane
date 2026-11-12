@@ -1,7 +1,7 @@
 use crate::client::{self, Connection, ServiceClient};
 use crate::theme::{self, ThemeChoice};
 use crate::widgets::{self, card, icon, icon_text, row, section};
-use crate::{effects, icons};
+use crate::{chrome, effects, icons};
 use egui::{Frame, Margin, RichText, Ui};
 use otozane_core::config::EffectConfig;
 use otozane_core::protocol::{CaptureState, Request, Status};
@@ -86,6 +86,7 @@ pub struct App {
     autostart: bool,
     has_tray: bool,
     login_window: bool,
+    logo: Option<(bool, egui::TextureHandle)>,
 }
 
 impl App {
@@ -123,6 +124,7 @@ impl App {
             autostart: client::autostart_enabled(),
             has_tray,
             login_window: client::login_window_enabled(),
+            logo: None,
         }
     }
 
@@ -169,58 +171,150 @@ impl App {
         self.status = status;
     }
 
+    /// Current state as (color, short title, detail line).
+    fn state(&self, p: &theme::Palette) -> (egui::Color32, &'static str, String) {
+        match (&self.connection, &self.status) {
+            (Connection::Connected, Some(st)) => match &st.capture {
+                CaptureState::Running(d) if !st.processing_enabled => {
+                    (p.text_weak, "Bypassed", device_label(st, Some(d)))
+                }
+                CaptureState::Running(d) => (p.accent, "Processing", device_label(st, Some(d))),
+                CaptureState::Connecting(d) => {
+                    (p.text_weak, "Connecting", device_label(st, Some(d)))
+                }
+                CaptureState::WaitingForDevice(d) => (
+                    p.text_weak,
+                    "Waiting for microphone",
+                    d.as_deref().map_or("No microphone found".to_string(), |d| {
+                        format!("{d} is not connected")
+                    }),
+                ),
+                CaptureState::Starting => (p.text_weak, "Starting", String::new()),
+                CaptureState::Error(e) => (p.error, "Audio error", e.clone()),
+            },
+            (Connection::Connecting, _) | (Connection::Connected, None) => {
+                (p.text_weak, "Connecting", String::new())
+            }
+            (Connection::Disconnected(_), _) => (p.error, "Service stopped", String::new()),
+        }
+    }
+
     fn nav(&mut self, ui: &mut Ui) {
-        ui.add_space(6.0);
+        let p = theme::current(ui.ctx());
+        // The sidebar's top strip is part of the title bar.
+        let top = ui
+            .max_rect()
+            .with_max_y(ui.max_rect().top() + chrome::HEIGHT);
+        crate::chrome::drag_area(ui, top.expand2(egui::vec2(12.0, 0.0)));
+        // Centers the 36 px logo row in the title bar strip.
+        ui.add_space((chrome::HEIGHT - 36.0) / 2.0);
         ui.horizontal(|ui| {
-            ui.label(icon(icons::AUDIO_LINES, 20.0).color(theme::current(ui.ctx()).accent));
-            ui.label(RichText::new("Otozane").heading().size(20.0));
+            let dark = ui.visuals().dark_mode;
+            if self.logo.as_ref().is_none_or(|(d, _)| *d != dark) {
+                // The icon is a dark tile; on a dark sidebar show it inverted.
+                let icon = crate::icon();
+                let mut rgba = icon.rgba;
+                if dark {
+                    for px in rgba.as_chunks_mut::<4>().0 {
+                        for c in &mut px[..3] {
+                            *c = 255 - *c;
+                        }
+                    }
+                }
+                let img = egui::ColorImage::from_rgba_unmultiplied(
+                    [icon.width as usize, icon.height as usize],
+                    &rgba,
+                );
+                let tex = ui
+                    .ctx()
+                    .load_texture("logo", img, egui::TextureOptions::LINEAR);
+                self.logo = Some((dark, tex));
+            }
+            let logo = &self.logo.as_ref().unwrap().1;
+            ui.add(egui::Image::new((logo.id(), egui::vec2(36.0, 36.0))));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(widgets::medium("Otozane").size(17.0));
+                ui.label(RichText::new("Microphone processor").small().weak());
+            });
         });
-        ui.add_space(14.0);
+        ui.add_space((chrome::HEIGHT - 36.0) / 2.0 + 4.0);
+        ui.spacing_mut().item_spacing.y = 4.0;
         for page in Page::ALL {
             let (glyph, label) = page.label();
             let selected = self.page == page;
-            let text = RichText::new(icon_text(glyph, label));
-            let b = egui::Button::selectable(selected, text)
-                .min_size(egui::vec2(ui.available_width(), 34.0));
+            let (text, fill) = if selected {
+                (
+                    widgets::medium(icon_text(glyph, label)).color(p.text),
+                    p.accent_soft,
+                )
+            } else {
+                (
+                    RichText::new(icon_text(glyph, label)),
+                    egui::Color32::TRANSPARENT,
+                )
+            };
+            let b = egui::Button::new(text)
+                .fill(fill)
+                .frame_when_inactive(selected)
+                .corner_radius(24)
+                .min_size(egui::vec2(ui.available_width(), 48.0));
             if ui.add(b).clicked() {
                 self.page = page;
             }
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            ui.add_space(4.0);
-            let p = theme::current(ui.ctx());
-            let (color, text) = match (&self.connection, &self.status) {
-                (Connection::Connected, Some(st)) => match &st.capture {
-                    CaptureState::Running(_) => (p.success, "Processing"),
-                    CaptureState::Error(_) => (p.error, "Audio error"),
-                    _ => (p.warning, "Waiting for input"),
-                },
-                (Connection::Connecting, _) | (Connection::Connected, None) => {
-                    (p.text_weak, "Connecting")
-                }
-                (Connection::Disconnected(_), _) => (p.error, "Service stopped"),
-            };
-            widgets::status(ui, color, text);
+            let (color, title, detail) = self.state(&p);
+            Frame::new()
+                .fill(p.card)
+                .corner_radius(16)
+                .inner_margin(Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    // Bottom-up layout: the last item added sits on top.
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if !detail.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(detail).small().weak()).truncate());
+                    }
+                    ui.horizontal(|ui| {
+                        widgets::dot(ui, color, 4.0);
+                        ui.label(widgets::medium(title).size(13.5));
+                    });
+                });
         });
     }
 
     fn disconnected(&mut self, ui: &mut Ui, reason: &str) {
-        widgets::heading(ui, "Service not running");
+        let p = theme::current(ui.ctx());
+        ui.add_space(40.0);
         card(ui, |ui| {
-            ui.label("The Otozane audio service processes your microphone in the background. Start it to use the virtual microphone.");
-            ui.label(RichText::new(reason).small().weak());
-            ui.add_space(6.0);
-            if ui
-                .button(icon_text(icons::POWER, "Start service"))
-                .clicked()
-                && let Err(e) = client::start_service()
-            {
-                self.toasts.push((
-                    format!("Could not start otozaned: {e}"),
-                    Instant::now(),
-                    true,
-                ));
-            }
+            ui.vertical_centered(|ui| {
+                ui.add_space(16.0);
+                ui.label(icon(icons::UNPLUG, 34.0).color(p.text_weak));
+                ui.add_space(6.0);
+                ui.label(widgets::medium("Service not running").size(20.0));
+                ui.label(
+                    RichText::new(
+                        "The Otozane service processes your microphone in the background.\nStart it to use the virtual microphone.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(10.0);
+                if ui
+                    .add(widgets::primary(ui, icon_text(icons::POWER, "Start service")))
+                    .clicked()
+                    && let Err(e) = client::start_service()
+                {
+                    self.toasts.push((
+                        format!("Could not start otozaned: {e}"),
+                        Instant::now(),
+                        true,
+                    ));
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new(reason).small().weak());
+                ui.add_space(12.0);
+            });
         });
     }
 
@@ -229,155 +323,267 @@ impl App {
             return;
         };
         let p = theme::current(ui.ctx());
-        widgets::heading(ui, "Overview");
+        let (color, title, detail) = self.state(&p);
+
+        // Hero: what is happening right now, and the master switch.
         card(ui, |ui| {
-            let (color, title, detail) = match &st.capture {
-                CaptureState::Running(d) => (
-                    p.success,
-                    "Processing".to_string(),
-                    device_label(&st, Some(d)),
-                ),
-                CaptureState::Connecting(d) => (
-                    p.warning,
-                    "Connecting".to_string(),
-                    device_label(&st, Some(d)),
-                ),
-                CaptureState::WaitingForDevice(d) => (
-                    p.warning,
-                    "Waiting for microphone".to_string(),
-                    d.as_deref().map_or("No microphone found".to_string(), |d| {
-                        format!("{d} is not connected")
-                    }),
-                ),
-                CaptureState::Starting => (p.text_weak, "Starting".to_string(), String::new()),
-                CaptureState::Error(e) => (p.error, "Audio error".to_string(), e.clone()),
-            };
             ui.horizontal(|ui| {
                 let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 6.0, color);
-                ui.label(
-                    RichText::new(title)
-                        .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                        .size(17.0),
+                    ui.allocate_exact_size(egui::vec2(52.0, 52.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(rect.center(), 26.0, color.gamma_multiply(0.16));
+                let glyph = if st.processing_enabled {
+                    icons::MIC
+                } else {
+                    icons::MIC_OFF
+                };
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    egui::FontId::proportional(24.0),
+                    color,
                 );
-            });
-            if !detail.is_empty() {
-                ui.label(RichText::new(detail).weak());
-            }
-            ui.add_space(4.0);
-            let vmic = if st.virtual_source_ready {
-                "\u{201c}Otozane Microphone\u{201d} is available to applications"
-            } else {
-                "Virtual microphone is not ready"
-            };
-            ui.label(RichText::new(icon_text(icons::MIC, vmic)).small().weak());
-        });
-        section(ui, "Levels");
-        card(ui, |ui| {
-            widgets::meter(ui, "Input", self.levels.0);
-            widgets::meter(ui, "Output", self.levels.1);
-        });
-        section(ui, "Processing");
-        card(ui, |ui| {
-            row(
-                ui,
-                "Enable processing",
-                Some("When off, the microphone passes through unchanged"),
-                |ui| {
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(widgets::medium(title).size(20.0));
+                    let sub = if detail.is_empty() {
+                        "No input".to_string()
+                    } else {
+                        detail
+                    };
+                    ui.label(RichText::new(sub).weak());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut on = st.processing_enabled;
-                    if widgets::switch(ui, &mut on).changed() {
+                    if widgets::switch(ui, &mut on)
+                        .on_hover_text("When off, the microphone passes through unchanged")
+                        .changed()
+                    {
                         self.send(Request::SetProcessing { enabled: on });
                     }
+                    ui.label(RichText::new("Effects").weak());
+                });
+            });
+            ui.add_space(8.0);
+            widgets::divider(ui);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let (glyph, c, text) = if st.virtual_source_ready {
+                    (
+                        icons::CIRCLE_CHECK,
+                        p.accent,
+                        "Apps can record from \u{201c}Otozane Microphone\u{201d}",
+                    )
+                } else {
+                    (
+                        icons::CIRCLE_ALERT,
+                        p.text_weak,
+                        "Virtual microphone is not ready",
+                    )
+                };
+                ui.label(icon(glyph, 14.0).color(c));
+                ui.label(RichText::new(text).small());
+            });
+        });
+
+        section(ui, "Levels");
+        card(ui, |ui| {
+            ui.add_space(4.0);
+            widgets::meters(ui, &[("Input", self.levels.0), ("Output", self.levels.1)]);
+        });
+
+        widgets::section_with(ui, "Signal chain", |ui| {
+            if widgets::link(ui, "Edit effects").clicked() {
+                self.page = Page::Effects;
+            }
+        });
+        card(ui, |ui| {
+            if !st.processing_enabled {
+                ui.multiply_opacity(0.45);
+            }
+            self.chain_strip(ui, &st);
+        });
+
+        section(ui, "Input");
+        card(ui, |ui| {
+            self.device_row(ui, &st);
+            widgets::divider(ui);
+            let profiles = self.profiles.clone();
+            row(
+                ui,
+                "Profile",
+                Some("Effect chain and all its settings"),
+                |ui| {
+                    egui::ComboBox::from_id_salt("profile")
+                        .selected_text(&st.active_profile)
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            for name in &profiles {
+                                if ui
+                                    .selectable_label(*name == st.active_profile, name)
+                                    .clicked()
+                                    && *name != st.active_profile
+                                {
+                                    self.send(Request::LoadProfile { name: name.clone() });
+                                }
+                            }
+                        });
                 },
             );
-            ui.separator();
-            self.device_row(ui, &st);
-            ui.separator();
-            let profiles = self.profiles.clone();
-            row(ui, "Profile", None, |ui| {
-                egui::ComboBox::from_id_salt("profile")
-                    .selected_text(&st.active_profile)
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        for name in &profiles {
-                            if ui
-                                .selectable_label(*name == st.active_profile, name)
-                                .clicked()
-                                && *name != st.active_profile
-                            {
-                                self.send(Request::LoadProfile { name: name.clone() });
-                            }
-                        }
-                    });
-            });
-            if let Some(i) = self
-                .chain
-                .iter()
-                .position(|e| e.kind == otozane_core::effects::EffectKind::Rnnoise)
-            {
-                ui.separator();
-                row(ui, "Noise suppression", Some("RNNoise"), |ui| {
-                    let mut on = self.chain[i].enabled;
-                    if widgets::switch(ui, &mut on).changed() {
-                        self.chain[i].enabled = on;
-                        self.edited();
-                        let id = self.chain[i].id;
-                        self.send(Request::SetEffectEnabled { id, enabled: on });
-                    }
-                });
+        });
+    }
+
+    /// Microphone → effects → virtual microphone, each effect a chip that
+    /// toggles bypass on click.
+    fn chain_strip(&mut self, ui: &mut Ui, st: &Status) {
+        let p = theme::current(ui.ctx());
+        let chip = |ui: &mut Ui,
+                    glyph: &str,
+                    label: &str,
+                    fill: egui::Color32,
+                    fg: egui::Color32,
+                    strike: bool| {
+            // M3 filter chip: tonal when selected, outlined otherwise.
+            let mut text = RichText::new(icon_text(glyph, label)).color(fg);
+            let mut b = egui::Button::new(text.clone());
+            if strike {
+                text = text.strikethrough();
+                b = egui::Button::new(text).stroke(egui::Stroke::new(1.0, p.outline));
             }
+            ui.add(
+                b.fill(fill)
+                    .corner_radius(8)
+                    .min_size(egui::vec2(0.0, 32.0)),
+            )
+        };
+        let arrow = |ui: &mut Ui| {
+            ui.label(icon(icons::ARROW_RIGHT, 14.0).color(p.text_weak));
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+            let input = match &st.input_device {
+                None => "Microphone".to_string(),
+                Some(n) => device_label(st, Some(n)),
+            };
+            chip(ui, icons::MIC, &input, p.raised, p.text, false);
+            for i in 0..self.chain.len() {
+                arrow(ui);
+                let e = &self.chain[i];
+                let on = e.enabled;
+                let (fill, fg) = if on {
+                    (p.accent_soft, p.text)
+                } else {
+                    (egui::Color32::TRANSPARENT, p.text_weak)
+                };
+                let tip = if on {
+                    "Click to bypass"
+                } else {
+                    "Bypassed. Click to enable"
+                };
+                if chip(
+                    ui,
+                    effects::kind_icon(e.kind),
+                    e.display_name(),
+                    fill,
+                    fg,
+                    !on,
+                )
+                .on_hover_text(tip)
+                .clicked()
+                {
+                    self.chain[i].enabled = !on;
+                    self.edited();
+                    let id = self.chain[i].id;
+                    self.send(Request::SetEffectEnabled { id, enabled: !on });
+                }
+            }
+            if self.chain.is_empty() {
+                arrow(ui);
+                ui.label(RichText::new("no effects").weak().italics());
+            }
+            arrow(ui);
+            chip(
+                ui,
+                icons::RADIO,
+                "Otozane Microphone",
+                p.raised,
+                p.text,
+                false,
+            );
         });
     }
 
     fn device_row(&mut self, ui: &mut Ui, st: &Status) {
-        row(ui, "Microphone", None, |ui| {
-            let selected = match &st.input_device {
-                None => "Automatic".to_string(),
-                Some(name) => device_label(st, Some(name)),
-            };
-            egui::ComboBox::from_id_salt("device")
-                .selected_text(selected)
-                .width(260.0)
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(st.input_device.is_none(), "Automatic")
-                        .clicked()
-                    {
-                        self.send(Request::SetInput { device: None });
-                    }
-                    for d in &st.devices {
-                        let current = st.input_device.as_deref() == Some(&d.name);
-                        let mut label = d.description.clone();
-                        if d.is_virtual {
-                            label.push_str("  (virtual)");
-                        }
+        row(
+            ui,
+            "Microphone",
+            Some("\u{201c}Automatic\u{201d} follows the system default"),
+            |ui| {
+                let selected = match &st.input_device {
+                    None => "Automatic".to_string(),
+                    Some(name) => device_label(st, Some(name)),
+                };
+                egui::ComboBox::from_id_salt("device")
+                    .selected_text(selected)
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(current, label)
-                            .on_hover_text(&d.name)
+                            .selectable_label(st.input_device.is_none(), "Automatic")
                             .clicked()
                         {
-                            self.send(Request::SetInput {
-                                device: Some(d.name.clone()),
-                            });
+                            self.send(Request::SetInput { device: None });
                         }
-                    }
-                });
-        });
+                        for d in &st.devices {
+                            let current = st.input_device.as_deref() == Some(&d.name);
+                            let mut label = d.description.clone();
+                            if d.is_virtual {
+                                label.push_str("  (virtual)");
+                            }
+                            if ui
+                                .selectable_label(current, label)
+                                .on_hover_text(&d.name)
+                                .clicked()
+                            {
+                                self.send(Request::SetInput {
+                                    device: Some(d.name.clone()),
+                                });
+                            }
+                        }
+                    });
+            },
+        );
     }
 
     fn profiles_page(&mut self, ui: &mut Ui) {
         let Some(active) = self.status.as_ref().map(|s| s.active_profile.clone()) else {
             return;
         };
-        widgets::heading(ui, "Profiles");
-        ui.label(RichText::new("A profile stores the effect chain with all parameters. Changes are saved to the active profile automatically.").weak());
-        section(ui, "Saved profiles");
+        let p = theme::current(ui.ctx());
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                widgets::heading(
+                    ui,
+                    "Profiles",
+                    Some("Each profile keeps an effect chain with all its settings. The active one saves automatically."),
+                );
+            });
+        });
+        widgets::section_with(ui, "Saved profiles", |ui| {
+            if widgets::link(ui, icon_text(icons::UPLOAD, "Import"))
+                .on_hover_text("Import a profile from a .toml file")
+                .clicked()
+            {
+                self.client.import_profile();
+            }
+        });
         card(ui, |ui| {
             let names = self.profiles.clone();
             for (i, name) in names.iter().enumerate() {
                 if i > 0 {
-                    ui.separator();
+                    widgets::divider(ui);
                 }
                 let is_active = *name == active;
                 if let Some((from, to)) = &mut self.renaming
@@ -385,95 +591,112 @@ impl App {
                 {
                     let mut commit = None;
                     ui.horizontal(|ui| {
-                        let r = ui.text_edit_singleline(to);
-                        if ui
-                            .button(icon(icons::CHECK, 15.0))
-                            .on_hover_text("Rename")
-                            .clicked()
+                        ui.set_min_height(40.0);
+                        let r = ui.add(egui::TextEdit::singleline(to).desired_width(260.0));
+                        r.request_focus();
+                        if ui.add(widgets::primary(ui, "Rename")).clicked()
                             || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                         {
                             commit = Some(true);
                         }
-                        if ui
-                            .button(icon(icons::X, 15.0))
-                            .on_hover_text("Cancel")
-                            .clicked()
+                        if ui.button("Cancel").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
                         {
                             commit = Some(false);
                         }
                     });
                     if let Some(ok) = commit {
                         let (from, to) = self.renaming.take().unwrap();
-                        if ok && from != to {
-                            self.send(Request::RenameProfile { from, to });
+                        if ok && from != to && !to.trim().is_empty() {
+                            self.send(Request::RenameProfile {
+                                from,
+                                to: to.trim().to_string(),
+                            });
                         }
                     }
                     continue;
                 }
-                let subtitle = is_active.then_some("Active");
-                row(ui, name, subtitle, |ui| {
-                    if !is_active
-                        && ui
-                            .button(icon(icons::TRASH_2, 15.0))
-                            .on_hover_text("Delete")
-                            .clicked()
-                    {
-                        self.send(Request::DeleteProfile { name: name.clone() });
+                ui.horizontal(|ui| {
+                    ui.set_min_height(40.0);
+                    let glyph = if is_active {
+                        icons::CIRCLE_CHECK
+                    } else {
+                        icons::BOOKMARK
+                    };
+                    ui.label(icon(glyph, 16.0).color(if is_active {
+                        p.accent
+                    } else {
+                        p.text_weak
+                    }));
+                    if is_active {
+                        ui.label(widgets::medium(name));
+                        widgets::badge(ui, "Active", p.accent, p.accent_soft);
+                    } else {
+                        ui.label(name);
                     }
-                    if ui
-                        .button(icon(icons::PENCIL, 15.0))
-                        .on_hover_text("Rename")
-                        .clicked()
-                    {
-                        self.renaming = Some((name.clone(), name.clone()));
-                    }
-                    if ui.button("Export").clicked() {
-                        self.send(Request::GetProfile { name: name.clone() });
-                    }
-                    if !is_active && ui.button("Load").clicked() {
-                        self.send(Request::LoadProfile { name: name.clone() });
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !is_active
+                            && widgets::icon_button(ui, icons::TRASH_2, "Delete").clicked()
+                        {
+                            self.send(Request::DeleteProfile { name: name.clone() });
+                        }
+                        if widgets::icon_button(ui, icons::DOWNLOAD, "Export to a file").clicked() {
+                            self.send(Request::GetProfile { name: name.clone() });
+                        }
+                        if widgets::icon_button(ui, icons::PENCIL, "Rename").clicked() {
+                            self.renaming = Some((name.clone(), name.clone()));
+                        }
+                        if !is_active && ui.add(widgets::tonal(ui, "Switch to")).clicked() {
+                            self.send(Request::LoadProfile { name: name.clone() });
+                        }
+                    });
                 });
             }
         });
-        if ui
-            .button(icon_text(icons::FOLDER_OPEN, "Import profile..."))
-            .clicked()
-        {
-            self.client.import_profile();
-        }
-        section(ui, "Save current chain as a new profile");
+
+        section(ui, "New profile");
         card(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_profile)
-                        .hint_text("Profile name")
-                        .desired_width(260.0),
-                );
+                ui.set_min_height(40.0);
                 let name = self.new_profile.trim().to_string();
-                if ui
-                    .add_enabled(
-                        !name.is_empty(),
-                        egui::Button::new(icon_text(icons::SAVE, "Save")),
-                    )
-                    .clicked()
-                {
-                    self.send(Request::SaveProfileAs { name });
-                    self.new_profile.clear();
-                }
+                let w = ui.available_width() - 190.0;
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut self.new_profile)
+                        .hint_text("Name, e.g. Streaming")
+                        .desired_width(w.max(120.0)),
+                );
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if (ui
+                        .add_enabled(
+                            !name.is_empty(),
+                            widgets::primary(ui, icon_text(icons::SAVE, "Save current chain")),
+                        )
+                        .clicked()
+                        || enter)
+                        && !name.is_empty()
+                    {
+                        self.send(Request::SaveProfileAs { name });
+                        self.new_profile.clear();
+                    }
+                });
             });
         });
+
         section(ui, "Presets");
         card(ui, |ui| {
-            row(
-                ui,
-                "Voice",
-                Some("Gain, noise suppression with voice detection, gate, compressor, limiter"),
-                |ui| {
-                    if ui
-                        .button(icon_text(icons::PLUS, "Create profile"))
-                        .clicked()
-                    {
+            ui.horizontal(|ui| {
+                ui.set_min_height(48.0);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 10.0, p.accent_soft);
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::SPARKLES, egui::FontId::proportional(17.0), p.accent);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(widgets::medium("Voice"));
+                    ui.label(RichText::new("Gain, noise suppression with voice detection, gate, compressor, limiter").small().weak());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(widgets::tonal(ui, icon_text(icons::PLUS, "Create"))).on_hover_text("Creates a new profile from this preset").clicked() {
                         // Keeps the current profile: switch to a new one, then fill it.
                         let name = unique_name(&self.profiles, "Voice");
                         self.send(Request::SaveProfileAs { name });
@@ -481,43 +704,38 @@ impl App {
                             chain: otozane_core::config::Profile::voice().chain,
                         });
                     }
-                },
-            );
+                });
+            });
         });
     }
 
     fn settings_page(&mut self, ui: &mut Ui) {
-        widgets::heading(ui, "Settings");
+        widgets::heading(ui, "Settings", None);
         section(ui, "Appearance");
         card(ui, |ui| {
             row(ui, "Theme", None, |ui| {
                 let mut choice = self.settings.theme;
-                for (c, label) in [
-                    (ThemeChoice::Dark, "Dark"),
-                    (ThemeChoice::Light, "Light"),
-                    (ThemeChoice::System, "System"),
-                ] {
-                    ui.selectable_value(&mut choice, c, label);
-                }
-                if choice != self.settings.theme {
+                if widgets::segmented(
+                    ui,
+                    &mut choice,
+                    &[
+                        (ThemeChoice::System, "System"),
+                        (ThemeChoice::Light, "Light"),
+                        (ThemeChoice::Dark, "Dark"),
+                    ],
+                ) {
                     self.settings.theme = choice;
                     theme::apply(ui.ctx(), choice);
                     self.settings.save();
                 }
             });
         });
-        section(ui, "Background operation");
+        section(ui, "Background");
         card(ui, |ui| {
-            ui.label(if self.has_tray {
-                "Audio is processed by the otozaned service and keeps running when this window is closed. Closing the window hides it to the tray."
-            } else {
-                "Audio is processed by the otozaned service and keeps running when this window is closed."
-            });
-            ui.separator();
             row(
                 ui,
                 "Start with session",
-                Some("Runs otozaned as a systemd user service when you log in"),
+                Some("Runs the audio service when you log in"),
                 |ui| {
                     let mut on = self.autostart;
                     if widgets::switch(ui, &mut on).changed() {
@@ -533,7 +751,7 @@ impl App {
                     }
                 },
             );
-            ui.separator();
+            widgets::divider(ui);
             let hint = if self.has_tray {
                 "Starts this window hidden in the tray when you log in"
             } else {
@@ -555,10 +773,20 @@ impl App {
                 });
             });
             if self.status.is_some() {
-                ui.separator();
-                if ui.button(icon_text(icons::POWER, "Stop service")).clicked() {
-                    self.send(Request::Shutdown);
-                }
+                widgets::divider(ui);
+                let sub = if self.has_tray {
+                    "Keeps running when this window is closed; the window hides to the tray"
+                } else {
+                    "Keeps running when this window is closed"
+                };
+                row(ui, "Audio service", Some(sub), |ui| {
+                    if ui
+                        .add(widgets::danger(ui, icon_text(icons::POWER, "Stop")))
+                        .clicked()
+                    {
+                        self.send(Request::Shutdown);
+                    }
+                });
             }
         });
         let Some(st) = self.status.clone() else {
@@ -567,7 +795,7 @@ impl App {
         section(ui, "Audio");
         card(ui, |ui| {
             self.device_row(ui, &st);
-            ui.separator();
+            widgets::divider(ui);
             row(
                 ui,
                 "Format",
@@ -578,7 +806,10 @@ impl App {
                     } else {
                         "Mono"
                     };
-                    ui.label(format!("{} Hz, {ch}", st.diagnostics.sample_rate));
+                    ui.label(format!(
+                        "{} kHz · {ch}",
+                        st.diagnostics.sample_rate as f32 / 1000.0
+                    ));
                 },
             );
         });
@@ -586,45 +817,50 @@ impl App {
         card(ui, |ui| {
             let d = &st.diagnostics;
             let ms = |f: u32| f as f32 * 1000.0 / d.sample_rate.max(1) as f32;
+            let items = [
+                (
+                    "Estimated latency",
+                    format!("{:.1} ms", d.estimated_latency_ms()),
+                ),
+                (
+                    "Effect latency",
+                    format!(
+                        "{:.1} ms · {} fr",
+                        ms(d.chain_latency_frames),
+                        d.chain_latency_frames
+                    ),
+                ),
+                (
+                    "Capture quantum",
+                    format!("{:.1} ms · {} fr", ms(d.capture_quantum), d.capture_quantum),
+                ),
+                ("Output quantum", format!("{} fr", d.playback_quantum)),
+                ("Queued output", format!("{} fr", d.ring_fill_frames)),
+                ("Underruns", format!("{} fr", d.underrun_frames)),
+                ("Overruns", format!("{} fr", d.overrun_frames)),
+                (
+                    "Latency corrections",
+                    format!("{} fr skipped", d.skipped_frames),
+                ),
+                ("Processed blocks", d.processed_blocks.to_string()),
+                ("Service version", st.version.clone()),
+            ];
+            let col = (ui.available_width() - 24.0) / 2.0;
             egui::Grid::new("diag")
                 .num_columns(2)
-                .spacing([24.0, 6.0])
+                .spacing([24.0, 10.0])
+                .min_col_width(col)
                 .show(ui, |ui| {
-                    let mut kv = |k: &str, v: String| {
-                        ui.label(RichText::new(k).weak());
-                        ui.label(v);
+                    for pair in items.chunks(2) {
+                        for (k, v) in pair {
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                ui.label(RichText::new(*k).small().weak());
+                                ui.label(widgets::medium(v.as_str()));
+                            });
+                        }
                         ui.end_row();
-                    };
-                    kv("Service version", st.version.clone());
-                    kv(
-                        "Estimated latency",
-                        format!("{:.1} ms", d.estimated_latency_ms()),
-                    );
-                    kv(
-                        "Effect latency",
-                        format!(
-                            "{} frames ({:.1} ms)",
-                            d.chain_latency_frames,
-                            ms(d.chain_latency_frames)
-                        ),
-                    );
-                    kv(
-                        "Capture quantum",
-                        format!(
-                            "{} frames ({:.1} ms)",
-                            d.capture_quantum,
-                            ms(d.capture_quantum)
-                        ),
-                    );
-                    kv("Output quantum", format!("{} frames", d.playback_quantum));
-                    kv("Queued output", format!("{} frames", d.ring_fill_frames));
-                    kv("Underruns", format!("{} frames", d.underrun_frames));
-                    kv("Overruns", format!("{} frames", d.overrun_frames));
-                    kv(
-                        "Latency corrections",
-                        format!("{} frames skipped", d.skipped_frames),
-                    );
-                    kv("Processed blocks", d.processed_blocks.to_string());
+                    }
                 });
         });
     }
@@ -660,22 +896,44 @@ impl eframe::App for App {
         dev_screenshot(ui);
         let p = theme::current(ui.ctx());
         egui::Panel::left("nav")
-            .exact_size(200.0)
+            .exact_size(216.0)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::new().fill(p.sidebar).inner_margin(Margin::same(12)))
+            .frame(Frame::new().fill(p.sidebar).inner_margin(Margin {
+                left: 12,
+                right: 12,
+                top: 0,
+                bottom: 14,
+            }))
             .show(ui, |ui| self.nav(ui));
-        egui::CentralPanel::default()
+        egui::Panel::top("titlebar")
+            .exact_size(chrome::HEIGHT)
+            .resizable(false)
+            .show_separator_line(false)
             .frame(
                 Frame::new()
                     .fill(p.window)
-                    .inner_margin(Margin::symmetric(28, 20)),
+                    .inner_margin(Margin::symmetric(14, 0)),
             )
+            .show(ui, |ui| {
+                chrome::drag_area(ui, ui.max_rect().expand2(egui::vec2(14.0, 0.0)));
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    chrome::buttons,
+                );
+            });
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(p.window).inner_margin(Margin {
+                left: 32,
+                right: 32,
+                top: 0,
+                bottom: 24,
+            }))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| {
-                        let width = ui.available_width().min(780.0);
+                        let width = ui.available_width().min(760.0);
                         ui.horizontal_top(|ui| {
                             ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
                             ui.vertical(|ui| {
@@ -697,18 +955,28 @@ impl eframe::App for App {
                         });
                     });
             });
+        chrome::resize_edges(ui.ctx());
         if !self.toasts.is_empty() {
             egui::Area::new(egui::Id::unique("toasts"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
                 .show(ui.ctx(), |ui| {
                     for (msg, _, is_error) in &self.toasts {
-                        Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(if *is_error {
-                                RichText::new(icon_text(icons::CIRCLE_ALERT, msg)).color(p.error)
-                            } else {
-                                RichText::new(icon_text(icons::CIRCLE_CHECK, msg))
+                        let glyph = if *is_error {
+                            icons::CIRCLE_ALERT
+                        } else {
+                            icons::CIRCLE_CHECK
+                        };
+                        // M3 snackbar: inverse surface.
+                        Frame::popup(ui.style())
+                            .fill(p.inverse)
+                            .corner_radius(8)
+                            .inner_margin(Margin::symmetric(16, 12))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(icon(glyph, 16.0).color(p.on_inverse));
+                                    ui.label(RichText::new(msg).color(p.on_inverse));
+                                });
                             });
-                        });
                     }
                 });
             ui.ctx().request_repaint_after(Duration::from_millis(250));
