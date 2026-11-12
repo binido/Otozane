@@ -83,10 +83,13 @@ pub struct App {
     pub browser: Option<String>,
     new_profile: String,
     renaming: Option<(String, String)>,
+    autostart: bool,
+    has_tray: bool,
+    login_window: bool,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, has_tray: bool) -> Self {
         let mut settings = UiSettings::load();
         match std::env::var("OTOZANE_THEME").as_deref() {
             Ok("dark") => settings.theme = ThemeChoice::Dark,
@@ -117,6 +120,9 @@ impl App {
             browser: (std::env::var("OTOZANE_PAGE").as_deref() == Ok("plugins")).then(String::new),
             new_profile: String::new(),
             renaming: None,
+            autostart: client::autostart_enabled(),
+            has_tray,
+            login_window: client::login_window_enabled(),
         }
     }
 
@@ -500,6 +506,61 @@ impl App {
                 }
             });
         });
+        section(ui, "Background operation");
+        card(ui, |ui| {
+            ui.label(if self.has_tray {
+                "Audio is processed by the otozaned service and keeps running when this window is closed. Closing the window hides it to the tray."
+            } else {
+                "Audio is processed by the otozaned service and keeps running when this window is closed."
+            });
+            ui.separator();
+            row(
+                ui,
+                "Start with session",
+                Some("Runs otozaned as a systemd user service when you log in"),
+                |ui| {
+                    let mut on = self.autostart;
+                    if widgets::switch(ui, &mut on).changed() {
+                        let running = self.connection == Connection::Connected;
+                        match client::set_autostart(on, !running) {
+                            Ok(()) => self.autostart = on,
+                            Err(e) => self.toasts.push((
+                                format!("Could not change autostart: {e}"),
+                                Instant::now(),
+                                true,
+                            )),
+                        }
+                    }
+                },
+            );
+            ui.separator();
+            let hint = if self.has_tray {
+                "Starts this window hidden in the tray when you log in"
+            } else {
+                "Needs a system tray, none is running"
+            };
+            row(ui, "Open in tray at login", Some(hint), |ui| {
+                let mut on = self.login_window;
+                ui.add_enabled_ui(self.has_tray || on, |ui| {
+                    if widgets::switch(ui, &mut on).changed() {
+                        match client::set_login_window(on) {
+                            Ok(()) => self.login_window = on,
+                            Err(e) => self.toasts.push((
+                                format!("Could not change login autostart: {e}"),
+                                Instant::now(),
+                                true,
+                            )),
+                        }
+                    }
+                });
+            });
+            if self.status.is_some() {
+                ui.separator();
+                if ui.button(icon_text(icons::POWER, "Stop service")).clicked() {
+                    self.send(Request::Shutdown);
+                }
+            }
+        });
         let Some(st) = self.status.clone() else {
             return;
         };
@@ -520,19 +581,6 @@ impl App {
                     ui.label(format!("{} Hz, {ch}", st.diagnostics.sample_rate));
                 },
             );
-        });
-        section(ui, "Background operation");
-        card(ui, |ui| {
-            ui.label("Audio is processed by the otozaned service and keeps running when this window is closed.");
-            ui.label(
-                RichText::new("To start it with your session, install packaging/otozane.service as a systemd user unit and run `systemctl --user enable --now otozane`.")
-                    .small()
-                    .weak(),
-            );
-            ui.add_space(4.0);
-            if ui.button(icon_text(icons::POWER, "Stop service")).clicked() {
-                self.send(Request::Shutdown);
-            }
         });
         section(ui, "Diagnostics");
         card(ui, |ui| {
@@ -680,12 +728,12 @@ fn dev_screenshot(ui: &mut Ui) {
     if ctx.input(|i| i.time) < 1.0 || REQUESTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return;
     }
-    let c = ctx.clone();
     ctx.request_screenshot(move |img| {
         let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
         if std::fs::write(&path, bytes).is_ok() {
             println!("{}x{}", img.size[0], img.size[1]);
         }
-        c.send_viewport_cmd(egui::ViewportCommand::Close);
+        // Exits rather than closing, which would only hide to the tray.
+        std::process::exit(0);
     });
 }

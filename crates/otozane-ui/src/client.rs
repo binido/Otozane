@@ -114,12 +114,16 @@ fn run(rx: Receiver<Request>, state: Arc<Mutex<State>>, ctx: egui::Context) {
                 let mut s = state.lock().unwrap();
                 s.connection = Connection::Disconnected(err.to_string());
                 s.status = None;
-                // Requests queued while disconnected are stale.
-                while rx.try_recv().is_ok() {}
             }
-            Err(e) => {
-                state.lock().unwrap().connection = Connection::Disconnected(e.to_string());
-                while rx.try_recv().is_ok() {}
+            Err(e) => state.lock().unwrap().connection = Connection::Disconnected(e.to_string()),
+        }
+        // Requests queued while disconnected are stale. Stops once the window
+        // (and its sender) is gone.
+        loop {
+            match rx.try_recv() {
+                Ok(_) => {}
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
             }
         }
         ctx.request_repaint();
@@ -187,14 +191,124 @@ fn session(
     }
 }
 
-/// Starts `otozaned` detached from this process: from next to the current
-/// executable if present, otherwise from `PATH`.
-pub fn start_service() -> std::io::Result<()> {
-    use std::os::unix::process::CommandExt;
-    let local = std::env::current_exe()
+const UNIT: &str = include_str!("../../../packaging/otozane.service");
+const UNIT_EXEC: &str = "%h/.local/bin/otozaned";
+
+/// `otozaned` next to the current executable, if present.
+fn local_service() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("otozaned")))
-        .filter(|p| p.exists());
+        .filter(|p| p.exists())
+}
+
+fn config_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
+}
+
+fn unit_path() -> Option<std::path::PathBuf> {
+    Some(config_home()?.join("systemd/user/otozane.service"))
+}
+
+const DESKTOP: &str = include_str!("../../../packaging/otozane.desktop");
+
+fn login_entry_path() -> Option<std::path::PathBuf> {
+    Some(config_home()?.join("autostart/otozane.desktop"))
+}
+
+/// The desktop entry with `Exec` starting `exe` hidden in the tray.
+fn login_entry_text(exe: &std::path::Path) -> String {
+    let mut quoted = String::from("\"");
+    for c in exe.display().to_string().chars() {
+        match c {
+            // Escaped for the quoted argument, then again as a string value.
+            '"' | '`' | '$' => quoted.extend(['\\', '\\', c]),
+            '\\' => quoted.push_str(r"\\\\"),
+            '%' => quoted.push_str("%%"),
+            _ => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    DESKTOP.replace("Exec=otozane\n", &format!("Exec={quoted} --hidden\n"))
+}
+
+/// Whether the window starts hidden in the tray at login.
+pub fn login_window_enabled() -> bool {
+    login_entry_path().is_some_and(|p| p.exists())
+}
+
+/// Writes or removes the XDG autostart entry for this executable.
+pub fn set_login_window(on: bool) -> std::io::Result<()> {
+    let path = login_entry_path().ok_or_else(|| std::io::Error::other("HOME is not set"))?;
+    if !on {
+        return std::fs::remove_file(&path).or_else(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(e),
+        });
+    }
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, login_entry_text(&std::env::current_exe()?))
+}
+
+/// The unit file with `ExecStart` pointing at `service`.
+fn unit_text(service: Option<&std::path::Path>) -> String {
+    match service {
+        Some(p) => {
+            let exec = format!("\"{}\"", p.display().to_string().replace('%', "%%"));
+            UNIT.replace(UNIT_EXEC, &exec)
+        }
+        None => UNIT.to_string(),
+    }
+}
+
+fn systemctl(args: &[&str]) -> std::io::Result<()> {
+    let out = std::process::Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Whether the systemd user unit starts the service with the session.
+pub fn autostart_enabled() -> bool {
+    systemctl(&["is-enabled", "--quiet", "otozane.service"]).is_ok()
+}
+
+/// Installs and enables the user unit, or disables it. `start_now` also
+/// starts it; pass false while another instance is running, since the unit
+/// would fail on the single-instance lock.
+pub fn set_autostart(on: bool, start_now: bool) -> std::io::Result<()> {
+    if !on {
+        return systemctl(&["disable", "otozane.service"]);
+    }
+    let path = unit_path().ok_or_else(|| std::io::Error::other("HOME is not set"))?;
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, unit_text(local_service().as_deref()))?;
+    systemctl(&["daemon-reload"])?;
+    let mut args = vec!["enable", "otozane.service"];
+    if start_now {
+        args.push("--now");
+    }
+    systemctl(&args)
+}
+
+/// Starts `otozaned`: through systemd when the user unit is installed, so
+/// systemd owns the process, otherwise detached from this process, from next
+/// to the current executable if present, else from `PATH`.
+pub fn start_service() -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    if unit_path().is_some_and(|p| p.exists()) {
+        return systemctl(&["start", "otozane.service"]);
+    }
+    let local = local_service();
     let mut cmd = std::process::Command::new(
         local
             .as_deref()
@@ -206,4 +320,26 @@ pub fn start_service() -> std::io::Result<()> {
         // Own process group, so closing the UI's terminal does not stop audio.
         .process_group(0);
     cmd.spawn().map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit_points_at_local_service() {
+        let text = super::unit_text(Some(std::path::Path::new("/opt/my dir/50%/otozaned")));
+        assert!(
+            text.contains("ExecStart=\"/opt/my dir/50%%/otozaned\"\n"),
+            "{text}"
+        );
+        assert!(!text.contains(super::UNIT_EXEC));
+    }
+
+    #[test]
+    fn login_entry_starts_hidden() {
+        let text = super::login_entry_text(std::path::Path::new("/opt/a \"b\"/50%/otozane"));
+        assert!(
+            text.contains("\nExec=\"/opt/a \\\\\"b\\\\\"/50%%/otozane\" --hidden\n"),
+            "{text}"
+        );
+    }
 }

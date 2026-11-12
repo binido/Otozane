@@ -26,6 +26,9 @@ applications' audio, or your default devices.
 - Profiles: create, rename, delete, switch, export to and import from `.toml` files. The active profile saves automatically.
 - Background service (`otozaned`); the GUI (`otozane`) is optional.
 - egui desktop app with light/dark/system themes, level meters and diagnostics.
+- Tray icon (StatusNotifierItem, needs a tray host such as Waybar, KDE or
+  Noctalia): shows the service state, shows or hides the window, quits the app.
+  With a tray, closing the window hides it; the service keeps running either way.
 
 - VST3 effect plugins (Linux builds, e.g. `lsp-plugins-vst3`): plugin browser
   with search, parameters, state saved in profiles. Plugins are scanned in
@@ -50,17 +53,37 @@ cargo build --release
 
 Then pick **Otozane Microphone** as the input device in your application.
 
+To show Otozane in the application menu with its icon:
+
+```sh
+install -Dm644 packaging/otozane.svg ~/.local/share/icons/hicolor/scalable/apps/otozane.svg
+install -Dm644 packaging/otozane.desktop ~/.local/share/applications/otozane.desktop
+```
+
+The desktop entry runs `otozane` from `PATH`.
+
 ### Run the service with your session (optional)
+
+Turn on **Settings → Start with session** in the app. It writes
+`~/.config/systemd/user/otozane.service` pointing at the `otozaned` next to the
+app binary and enables it. If you move the binaries, toggle it off and on again.
+
+Manual equivalent:
 
 ```sh
 install -Dm755 target/release/otozaned ~/.local/bin/otozaned
-install -Dm755 target/release/otozane  ~/.local/bin/otozane
 install -Dm644 packaging/otozane.service ~/.config/systemd/user/otozane.service
 systemctl --user daemon-reload
 systemctl --user enable --now otozane
 ```
 
-Nothing is enabled automatically.
+Nothing is enabled until you do one of these.
+
+### Open the app in the tray at login (optional)
+
+Turn on **Settings → Open in tray at login**. It writes
+`~/.config/autostart/otozane.desktop`, which starts the app with `--hidden`
+(tray only, no window). The switch is available only while a tray is running.
 
 ## Configuration
 
