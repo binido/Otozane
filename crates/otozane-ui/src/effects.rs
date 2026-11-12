@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::icons;
 use crate::theme;
 use crate::widgets::{self, icon, icon_text};
-use egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
+use egui::{Margin, RichText, Stroke, Ui};
 use otozane_core::config::{EffectConfig, PluginRef, next_id};
 use otozane_core::effects::EffectKind;
 use otozane_core::param::{ParamKind, ParamSpec};
@@ -17,29 +17,72 @@ enum Action {
     AddPlugin(PluginRef),
 }
 
+/// Icon shown next to an effect name, here and in the overview chain.
+pub fn kind_icon(kind: EffectKind) -> &'static str {
+    match kind {
+        EffectKind::Gain => icons::VOLUME_2,
+        EffectKind::Rnnoise => icons::SPARKLES,
+        EffectKind::Gate => icons::SHIELD_CHECK,
+        EffectKind::Equalizer => icons::SLIDERS_HORIZONTAL,
+        EffectKind::Compressor => icons::GAUGE,
+        EffectKind::Limiter => icons::BRICK_WALL,
+        EffectKind::Plugin => icons::PUZZLE,
+    }
+}
+
+const LABEL_W: f32 = 150.0;
+
+/// One parameter line: fixed-width label, then the control filling the rest,
+/// so sliders line up across all effect cards.
+fn param_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(30.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(LABEL_W, 30.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(LABEL_W);
+                ui.add(egui::Label::new(RichText::new(label).weak()).truncate());
+            },
+        );
+        ui.spacing_mut().slider_width = (ui.available_width() - 110.0).max(80.0);
+        add(ui);
+    });
+}
+
 pub fn page(app: &mut App, ui: &mut Ui) {
     let Some((meters, infos)) = app.status().map(|s| (s.meters.clone(), s.effects.clone())) else {
         return;
     };
     let p = theme::current(ui.ctx());
     ui.horizontal(|ui| {
-        widgets::heading(ui, "Effects");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button(icon_text(icons::PLUS, "Add effect"), |ui| {
+        ui.vertical(|ui| {
+            widgets::heading(
+                ui,
+                "Effects",
+                Some("Sound passes through the chain from top to bottom."),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            ui.add_space(2.0);
+            let add = widgets::primary(ui, icon_text(icons::PLUS, "Add effect"));
+            egui::containers::menu::MenuButton::from_button(add).ui(ui, |ui| {
+                ui.set_min_width(200.0);
                 for &kind in EffectKind::ALL {
-                    if ui.button(kind.name()).clicked() {
+                    if ui.button(icon_text(kind_icon(kind), kind.name())).clicked() {
                         app_action(app, Action::Add(kind));
                     }
                 }
                 ui.separator();
-                if ui.button(icon_text(icons::PUZZLE, "Plugin...")).clicked() {
+                if ui
+                    .button(icon_text(icons::PUZZLE, "VST3 plugin..."))
+                    .clicked()
+                {
                     app.browser.get_or_insert_with(String::new);
                 }
             });
         });
     });
-    ui.label(RichText::new("Audio flows from top to bottom. Drag the handle to reorder.").weak());
-    ui.add_space(8.0);
     if let Some(a) = browser(app, ui) {
         app_action(app, a);
         app.browser = None;
@@ -47,41 +90,71 @@ pub fn page(app: &mut App, ui: &mut Ui) {
 
     if app.chain.is_empty() {
         widgets::card(ui, |ui| {
-            ui.label(
-                RichText::new("The chain is empty, so the microphone passes through unchanged.")
+            ui.vertical_centered(|ui| {
+                ui.add_space(14.0);
+                ui.label(icon(icons::AUDIO_WAVEFORM, 30.0).color(p.text_weak));
+                ui.label(widgets::medium("No effects yet"));
+                ui.label(
+                    RichText::new(
+                        "The microphone passes through unchanged. Add an effect to start.",
+                    )
                     .weak(),
-            );
+                );
+                ui.add_space(14.0);
+            });
         });
     }
 
     let mut action = None;
-    for i in 0..app.chain.len() {
+    let n = app.chain.len();
+    for i in 0..n {
         let id = app.chain[i].id;
         let kind = app.chain[i].kind;
+        let on = app.chain[i].enabled;
         let expanded = !app.collapsed.contains(&id);
-        let resp = Frame::new()
-            .fill(p.card)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::symmetric(12, 8))
+        let resp = widgets::card_frame(ui)
+            .inner_margin(Margin::symmetric(14, 10))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
+                    ui.set_min_height(36.0);
+                    ui.spacing_mut().item_spacing.x = 6.0;
                     ui.dnd_drag_source(egui::Id::unique(("effect-drag", id)), i, |ui| {
-                        ui.label(icon(icons::GRIP_VERTICAL, 18.0).color(p.text_weak));
+                        ui.label(icon(icons::GRIP_VERTICAL, 16.0).color(p.text_weak));
                     })
                     .response
+                    .on_hover_cursor(egui::CursorIcon::Grab)
                     .on_hover_text("Drag to reorder");
+                    // Kind tile, tinted while active.
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                    let (tile, fg) = if on {
+                        (p.accent_soft, p.accent)
+                    } else {
+                        (p.raised, p.text_weak)
+                    };
+                    ui.painter().rect_filled(rect, 9.0, tile);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        kind_icon(kind),
+                        egui::FontId::proportional(16.0),
+                        fg,
+                    );
+                    ui.add_space(4.0);
                     let chevron = if expanded {
                         icons::CHEVRON_DOWN
                     } else {
                         icons::CHEVRON_RIGHT
                     };
-                    let title =
-                        RichText::new(format!("{chevron}  {}", app.chain[i].display_name()))
-                            .family(egui::FontFamily::Name(theme::MEDIUM.into()));
+                    let mut title =
+                        widgets::medium(format!("{}  {chevron}", app.chain[i].display_name()));
+                    if !on {
+                        title = title.weak();
+                    }
                     if ui
                         .add(egui::Label::new(title).sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
                         if expanded {
@@ -90,15 +163,18 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                             app.collapsed.remove(&id);
                         }
                     }
-                    if let (Some((label, unit)), Some(v)) = (kind.meter(), meters.get(i)) {
-                        ui.label(
-                            RichText::new(format!("{label} {v:.0} {unit}"))
-                                .small()
-                                .weak(),
+                    if !on {
+                        widgets::badge(ui, "Bypassed", p.text_weak, p.raised);
+                    } else if let (Some((label, unit)), Some(v)) = (kind.meter(), meters.get(i)) {
+                        widgets::badge(
+                            ui,
+                            &format!("{label} {v:.0} {unit}"),
+                            p.text_weak,
+                            p.raised,
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mut on = app.chain[i].enabled;
+                        let mut on = on;
                         if widgets::switch(ui, &mut on)
                             .on_hover_text("Enable or bypass")
                             .changed()
@@ -107,29 +183,20 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                             app.edited();
                             app.send(Request::SetEffectEnabled { id, enabled: on });
                         }
-                        if ui
-                            .button(icon(icons::TRASH_2, 15.0))
-                            .on_hover_text("Remove")
-                            .clicked()
-                        {
+                        ui.add_space(6.0);
+                        if widgets::icon_button(ui, icons::TRASH_2, "Remove").clicked() {
                             action = Some(Action::Remove(i));
                         }
-                        if i + 1 < app.chain.len()
-                            && ui
-                                .button(icon(icons::ARROW_DOWN, 15.0))
-                                .on_hover_text("Move down")
-                                .clicked()
-                        {
-                            action = Some(Action::Move(i, i + 1));
-                        }
-                        if i > 0
-                            && ui
-                                .button(icon(icons::ARROW_UP, 15.0))
-                                .on_hover_text("Move up")
-                                .clicked()
-                        {
-                            action = Some(Action::Move(i, i - 1));
-                        }
+                        ui.add_enabled_ui(i + 1 < n, |ui| {
+                            if widgets::icon_button(ui, icons::ARROW_DOWN, "Move down").clicked() {
+                                action = Some(Action::Move(i, i + 1));
+                            }
+                        });
+                        ui.add_enabled_ui(i > 0, |ui| {
+                            if widgets::icon_button(ui, icons::ARROW_UP, "Move up").clicked() {
+                                action = Some(Action::Move(i, i - 1));
+                            }
+                        });
                     });
                 });
                 let info = infos.get(i).cloned().unwrap_or_default();
@@ -137,23 +204,36 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                     ui.label(RichText::new(icon_text(icons::CIRCLE_ALERT, e)).color(p.error));
                 }
                 if expanded {
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
+                    widgets::divider(ui);
+                    ui.add_space(6.0);
+                    if !on {
+                        ui.multiply_opacity(0.5);
+                    }
                     if kind == EffectKind::Plugin {
                         plugin_params(app, ui, i, &info);
                     } else {
                         params(app, ui, i);
                     }
+                    ui.add_space(2.0);
                 }
             })
             .response;
         if let Some(src) = resp.dnd_release_payload::<usize>() {
             action = Some(Action::Move(*src, i));
         } else if resp.dnd_hover_payload::<usize>().is_some() {
-            let y = resp.rect.top() - 4.0;
+            let y = resp.rect.top() - 6.0;
             ui.painter()
-                .hline(resp.rect.x_range(), y, Stroke::new(2.0, p.accent_bg));
+                .hline(resp.rect.x_range(), y, Stroke::new(3.0, p.accent_bg));
         }
-        ui.add_space(6.0);
+        // Connector to the next effect: the signal flows down.
+        if i + 1 < n {
+            let (rect, _) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 14.0), egui::Sense::hover());
+            let x = resp.rect.left() + 14.0 + 16.0 + 6.0 + 16.0;
+            ui.painter()
+                .vline(x, rect.y_range().expand(4.0), Stroke::new(2.0, p.border));
+        }
     }
     if let Some(a) = action {
         app_action(app, a);
@@ -193,19 +273,14 @@ fn params(app: &mut App, ui: &mut Ui, i: usize) {
     if kind == EffectKind::Equalizer {
         eq_editor(ui, id, &values, &mut changes);
     } else {
-        egui::Grid::new(("params", id))
-            .num_columns(2)
-            .spacing([18.0, 8.0])
-            .show(ui, |ui| {
-                for (spec, &v) in kind.params().iter().zip(&values) {
-                    let mut v = v;
-                    ui.label(spec.name);
-                    if param(ui, spec, &mut v, id) {
-                        changes.push((spec.key, v));
-                    }
-                    ui.end_row();
+        for (spec, &v) in kind.params().iter().zip(&values) {
+            let mut v = v;
+            param_row(ui, spec.name, |ui| {
+                if param(ui, spec, &mut v, id) {
+                    changes.push((spec.key, v));
                 }
             });
+        }
     }
     for (key, value) in changes {
         app.chain[i].params.insert(key.to_string(), value);
@@ -338,45 +413,44 @@ fn plugin_params(app: &mut App, ui: &mut Ui, i: usize, info: &EffectInfo) {
         .id_salt(("plugin-params", id))
         .max_height(360.0)
         .show(ui, |ui| {
-            egui::Grid::new(("pparams", id))
-                .num_columns(3)
-                .spacing([18.0, 8.0])
-                .show(ui, |ui| {
-                    for (j, d) in info.params.iter().enumerate() {
-                        let remote = info.values.get(j).copied().unwrap_or(d.default);
-                        let mut v = app.chain[i].params.get(&d.key).copied().unwrap_or(remote);
-                        ui.label(&d.name);
-                        let changed = if d.steps == 1 {
-                            let mut on = v >= 0.5;
-                            let c = widgets::switch(ui, &mut on).changed();
-                            v = if on { 1.0 } else { 0.0 };
-                            c
-                        } else if !d.choices.is_empty() {
-                            let n = d.steps as f32;
-                            let mut idx = (v * n).round() as usize;
-                            let before = idx;
-                            egui::ComboBox::from_id_salt(("pchoice", id, j))
-                                .selected_text(d.choices.get(idx).map_or("?", |s| s.as_str()))
-                                .show_ui(ui, |ui| {
-                                    for (k, l) in d.choices.iter().enumerate() {
-                                        ui.selectable_value(&mut idx, k, l);
-                                    }
-                                });
-                            v = idx as f32 / n;
-                            idx != before
-                        } else {
-                            ui.add(egui::Slider::new(&mut v, 0.0..=1.0).show_value(false))
-                                .changed()
-                        };
-                        // The plugin formats the value; it lags one status poll behind edits.
-                        let text = info.texts.get(j).map_or("", |s| s.as_str());
-                        ui.label(RichText::new(format!("{text} {}", d.unit)).weak());
-                        ui.end_row();
-                        if changed {
-                            changes.push((d.key.clone(), v));
-                        }
-                    }
+            for (j, d) in info.params.iter().enumerate() {
+                let remote = info.values.get(j).copied().unwrap_or(d.default);
+                let mut v = app.chain[i].params.get(&d.key).copied().unwrap_or(remote);
+                let mut changed = false;
+                param_row(ui, &d.name, |ui| {
+                    changed = if d.steps == 1 {
+                        let mut on = v >= 0.5;
+                        let c = widgets::switch(ui, &mut on).changed();
+                        v = if on { 1.0 } else { 0.0 };
+                        c
+                    } else if !d.choices.is_empty() {
+                        let n = d.steps as f32;
+                        let mut idx = (v * n).round() as usize;
+                        let before = idx;
+                        egui::ComboBox::from_id_salt(("pchoice", id, j))
+                            .selected_text(d.choices.get(idx).map_or("?", |s| s.as_str()))
+                            .show_ui(ui, |ui| {
+                                for (k, l) in d.choices.iter().enumerate() {
+                                    ui.selectable_value(&mut idx, k, l);
+                                }
+                            });
+                        v = idx as f32 / n;
+                        idx != before
+                    } else {
+                        ui.add(egui::Slider::new(&mut v, 0.0..=1.0).show_value(false))
+                            .changed()
+                    };
+                    // The plugin formats the value; it lags one status poll behind edits.
+                    let text = info.texts.get(j).map_or("", |s| s.as_str());
+                    ui.label(
+                        RichText::new(format!("{text} {}", d.unit))
+                            .font(egui::FontId::monospace(13.0)),
+                    );
                 });
+                if changed {
+                    changes.push((d.key.clone(), v));
+                }
+            }
         });
     for (key, value) in changes {
         app.chain[i].params.insert(key.clone(), value);
@@ -390,11 +464,11 @@ fn eq_editor(ui: &mut Ui, id: u64, values: &[f32], changes: &mut Vec<(&'static s
     let p = theme::current(ui.ctx());
     let sr = otozane_core::SAMPLE_RATE as f32;
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 140.0),
+        egui::vec2(ui.available_width(), 160.0),
         egui::Sense::hover(),
     );
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 8.0, ui.visuals().extreme_bg_color);
+    painter.rect_filled(rect, 10.0, ui.visuals().extreme_bg_color);
     let x_of = |f: f32| rect.left() + rect.width() * (f / 20.0).log10() / 3.0;
     let y_of =
         |db: f32| rect.center().y - db.clamp(-24.0, 24.0) / 24.0 * (rect.height() / 2.0 - 6.0);

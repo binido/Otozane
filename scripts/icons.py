@@ -12,7 +12,7 @@ NAMES = [
     "chevron-down", "chevron-right", "chevron-up", "save", "pencil", "refresh-cw", "activity",
     "sun", "moon", "monitor", "search", "copy", "gauge", "volume-2", "layers", "arrow-up",
     "arrow-down", "circle-check", "info", "bookmark", "list", "audio-waveform", "shield-check",
-    "folder-plus", "plug", "loader-circle", "unplug", "radio", "sparkles",
+    "folder-plus", "plug", "loader-circle", "unplug", "radio", "sparkles", "arrow-right", "ellipsis-vertical", "brick-wall", "download", "upload",
 ]
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(ROOT, "crates", "otozane-ui")

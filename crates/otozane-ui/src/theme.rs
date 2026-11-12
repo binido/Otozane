@@ -16,53 +16,65 @@ pub enum ThemeChoice {
     Dark,
 }
 
-/// Colors loosely following the libadwaita palette.
+/// Layered graphite surfaces with the brand blue from the app icon.
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub window: Color32,
     pub sidebar: Color32,
     pub card: Color32,
+    /// Controls and nested surfaces sitting on a card.
+    pub raised: Color32,
     pub border: Color32,
     pub text: Color32,
     pub text_weak: Color32,
     pub accent: Color32,
     pub accent_bg: Color32,
+    /// Translucent accent for selected rows and badges.
+    pub accent_soft: Color32,
     pub success: Color32,
     pub warning: Color32,
     pub error: Color32,
     pub meter_track: Color32,
 }
 
+const fn rgb(hex: u32) -> Color32 {
+    Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
 pub fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
-            window: Color32::from_rgb(0x22, 0x22, 0x26),
-            sidebar: Color32::from_rgb(0x2e, 0x2e, 0x32),
-            card: Color32::from_rgb(0x30, 0x30, 0x35),
-            border: Color32::from_rgb(0x3d, 0x3d, 0x42),
-            text: Color32::from_rgb(0xf6, 0xf6, 0xf7),
-            text_weak: Color32::from_rgb(0xa0, 0xa0, 0xa6),
-            accent: Color32::from_rgb(0x78, 0xae, 0xed),
-            accent_bg: Color32::from_rgb(0x35, 0x84, 0xe4),
-            success: Color32::from_rgb(0x8f, 0xf0, 0xa4),
-            warning: Color32::from_rgb(0xf8, 0xe4, 0x5c),
-            error: Color32::from_rgb(0xff, 0x7b, 0x63),
-            meter_track: Color32::from_rgb(0x3a, 0x3a, 0x3f),
+            window: rgb(0x141519),
+            sidebar: rgb(0x1a1b20),
+            card: rgb(0x1f2026),
+            raised: rgb(0x2a2c33),
+            border: rgb(0x2c2e36),
+            text: rgb(0xececf1),
+            text_weak: rgb(0x8d909b),
+            accent: rgb(0x7cb0ff),
+            accent_bg: rgb(0x3584e4),
+            accent_soft: Color32::from_rgba_unmultiplied(0x35, 0x84, 0xe4, 0x2e),
+            success: rgb(0x4ade80),
+            warning: rgb(0xfbbf24),
+            error: rgb(0xf87171),
+            meter_track: rgb(0x272930),
         }
     } else {
         Palette {
-            window: Color32::from_rgb(0xfa, 0xfa, 0xfb),
-            sidebar: Color32::from_rgb(0xeb, 0xeb, 0xed),
+            window: rgb(0xf3f4f7),
+            sidebar: rgb(0xe9ebef),
             card: Color32::WHITE,
-            border: Color32::from_rgb(0xdd, 0xdd, 0xe0),
-            text: Color32::from_rgb(0x1e, 0x1e, 0x22),
-            text_weak: Color32::from_rgb(0x6c, 0x6c, 0x73),
-            accent: Color32::from_rgb(0x1c, 0x71, 0xd8),
-            accent_bg: Color32::from_rgb(0x35, 0x84, 0xe4),
-            success: Color32::from_rgb(0x1b, 0x8a, 0x3c),
-            warning: Color32::from_rgb(0x9c, 0x6e, 0x03),
-            error: Color32::from_rgb(0xc0, 0x1c, 0x28),
-            meter_track: Color32::from_rgb(0xe3, 0xe3, 0xe6),
+            raised: rgb(0xeef0f3),
+            border: rgb(0xe0e3e8),
+            text: rgb(0x16181d),
+            text_weak: rgb(0x676b77),
+            accent: rgb(0x1c6fd8),
+            accent_bg: rgb(0x3584e4),
+            accent_soft: Color32::from_rgba_unmultiplied(0x35, 0x84, 0xe4, 0x24),
+            success: rgb(0x16a34a),
+            warning: rgb(0xc27c0e),
+            error: rgb(0xdc2626),
+            meter_track: rgb(0xe7e9ee),
         }
     }
 }
@@ -126,37 +138,30 @@ fn style(dark: bool) -> Style {
     v.panel_fill = p.window;
     v.window_fill = p.card;
     v.window_stroke = Stroke::new(1.0, p.border);
-    v.window_corner_radius = CornerRadius::same(12);
+    v.window_corner_radius = CornerRadius::same(14);
     v.menu_corner_radius = CornerRadius::same(10);
-    v.extreme_bg_color = if dark {
-        Color32::from_rgb(0x1d, 0x1d, 0x20)
-    } else {
-        Color32::WHITE
-    };
+    v.extreme_bg_color = if dark { rgb(0x121317) } else { Color32::WHITE };
     v.faint_bg_color = p.sidebar;
     v.hyperlink_color = p.accent;
     v.selection.bg_fill = p.accent_bg;
     v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    v.popup_shadow = egui::Shadow {
+        offset: [0, 6],
+        blur: 20,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 110 } else { 40 }),
+    };
+    v.window_shadow = v.popup_shadow;
     v.warn_fg_color = p.warning;
     v.error_fg_color = p.error;
     v.slider_trailing_fill = true;
     v.override_text_color = None;
     let (hover, active) = if dark {
-        (
-            Color32::from_rgb(0x45, 0x45, 0x4b),
-            Color32::from_rgb(0x52, 0x52, 0x59),
-        )
+        (rgb(0x33353d), rgb(0x3d3f48))
     } else {
-        (
-            Color32::from_rgb(0xe2, 0xe2, 0xe6),
-            Color32::from_rgb(0xd4, 0xd4, 0xd9),
-        )
+        (rgb(0xe3e6eb), rgb(0xd6dae1))
     };
-    let base = if dark {
-        Color32::from_rgb(0x3a, 0x3a, 0x40)
-    } else {
-        Color32::from_rgb(0xec, 0xec, 0xef)
-    };
+    let base = p.raised;
     let w = &mut v.widgets;
     w.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
     w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
@@ -177,8 +182,8 @@ fn style(dark: bool) -> Style {
     w.noninteractive.corner_radius = r8;
     s.visuals = v;
     s.spacing.item_spacing = Vec2::new(8.0, 8.0);
-    s.spacing.button_padding = Vec2::new(12.0, 6.0);
-    s.spacing.interact_size = Vec2::new(36.0, 30.0);
+    s.spacing.button_padding = Vec2::new(12.0, 7.0);
+    s.spacing.interact_size = Vec2::new(36.0, 32.0);
     s.spacing.slider_width = 220.0;
     s.spacing.menu_margin = Margin::same(6);
     s.spacing.combo_height = 300.0;
@@ -190,7 +195,7 @@ fn style(dark: bool) -> Style {
         (TextStyle::Monospace, FontId::monospace(13.0)),
         (
             TextStyle::Heading,
-            FontId::new(22.0, FontFamily::Name(MEDIUM.into())),
+            FontId::new(26.0, FontFamily::Name(MEDIUM.into())),
         ),
     ]
     .into();
