@@ -37,8 +37,17 @@ impl ksni::Tray for Tray {
     fn title(&self) -> String {
         "Otozane".into()
     }
-    fn icon_name(&self) -> String {
-        "audio-input-microphone".into()
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        let icon = crate::icon();
+        let mut data = icon.rgba;
+        for px in data.as_chunks_mut::<4>().0 {
+            px.rotate_right(1); // RGBA to ARGB
+        }
+        vec![ksni::Icon {
+            width: icon.width as i32,
+            height: icon.height as i32,
+            data,
+        }]
     }
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {

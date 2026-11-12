@@ -53,6 +53,15 @@ cargo build --release
 
 Then pick **Otozane Microphone** as the input device in your application.
 
+To show Otozane in the application menu with its icon:
+
+```sh
+install -Dm644 packaging/otozane.svg ~/.local/share/icons/hicolor/scalable/apps/otozane.svg
+install -Dm644 packaging/otozane.desktop ~/.local/share/applications/otozane.desktop
+```
+
+The desktop entry runs `otozane` from `PATH`.
+
 ### Run the service with your session (optional)
 
 Turn on **Settings → Start with session** in the app. It writes

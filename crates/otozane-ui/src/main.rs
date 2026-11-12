@@ -12,11 +12,18 @@ mod theme;
 mod tray;
 mod widgets;
 
+/// The app icon (`packaging/otozane.svg` rendered at 256 px).
+fn icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/otozane.png"))
+        .expect("bundled icon is a valid PNG")
+}
+
 fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Otozane")
             .with_app_id("otozane")
+            .with_icon(icon())
             .with_inner_size([980.0, 680.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()

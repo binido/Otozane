@@ -3,6 +3,6 @@ Type=Application
 Name=Otozane
 Comment=Real-time microphone processor
 Exec=otozane
-Icon=audio-input-microphone
+Icon=otozane
 Categories=AudioVideo;Audio;
 StartupWMClass=otozane
