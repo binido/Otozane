@@ -20,7 +20,7 @@ pub fn icon() -> egui::IconData {
 }
 
 fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Otozane")
             .with_app_id("otozane")
@@ -31,6 +31,16 @@ fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
+    // Screenshots get a fixed size; tiling compositors (niri) float such windows.
+    if std::env::var_os("OTOZANE_SCREENSHOT").is_some() {
+        let size = [1100.0, 720.0];
+        options.viewport = options
+            .viewport
+            .with_inner_size(size)
+            .with_min_inner_size(size)
+            .with_max_inner_size(size)
+            .with_resizable(false);
+    }
     let has_tray = tray.is_some();
     let tray_cc = tray.cloned();
     let result = eframe::run_native(
