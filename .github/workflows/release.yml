@@ -71,7 +71,7 @@ jobs:
       - name: Package
         run: scripts/package-linux.sh "$VERSION" ${{ matrix.arch }} dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.arch }}
           path: dist/*
@@ -82,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: dist-*
           merge-multiple: true
