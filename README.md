@@ -37,7 +37,43 @@ applications' audio, or your default devices.
 
 Not implemented yet: JSFX, CLAP, plugin editor windows. See [PLAN.md](PLAN.md).
 
-## Requirements
+## Install
+
+One command picks the right package from the latest
+[release](https://github.com/binido/Otozane/releases) for x86_64 and aarch64:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/binido/Otozane/main/scripts/install.sh | bash
+```
+
+| Distribution | What it installs |
+|---|---|
+| Arch, CachyOS, Manjaro, EndeavourOS | `otozane-bin`, built with `makepkg` from the release `PKGBUILD` |
+| Debian 12+, Ubuntu 24.04+, Mint, Pop!_OS | the `.deb` via `apt` |
+| Fedora, openSUSE | the `.rpm` via `dnf` or `zypper` |
+| anything else | the release tarball into `~/.local` |
+
+Manually, by hand from the release page:
+
+```sh
+# Arch family
+mkdir otozane-bin && cd otozane-bin
+curl -fsSLO https://github.com/binido/Otozane/releases/latest/download/PKGBUILD
+makepkg -si
+# Debian/Ubuntu
+sudo apt install ./otozane_<version>-1_amd64.deb
+# Fedora
+sudo dnf install ./otozane-<version>-1.x86_64.rpm
+# Any distribution: unpack the tarball, then
+./install.sh            # into ~/.local, or --prefix DIR
+./install.sh --uninstall
+```
+
+Packages need PipeWire 0.3.49+ and glibc 2.36+. RNNoise is built into the
+release binaries. Releases are built by `.github/workflows/release.yml` when a
+`vX.Y.Z` tag matching the version in `Cargo.toml` is pushed.
+
+## Build requirements
 
 - Linux with PipeWire and WirePlumber (developed on CachyOS, PipeWire 1.6).
 - Rust stable (1.85+), `clang` (for PipeWire bindings), `pkgconf`.

@@ -1,0 +1,102 @@
+name: Release
+
+# Push a tag vX.Y.Z that matches the workspace version in Cargo.toml.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RNNOISE_VERSION: "0.2"
+  RNNOISE_SHA256: 90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # Debian 12 sets the floor: glibc 2.36 and PipeWire 0.3.65.
+    container: debian:bookworm
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, rnnoise_flags: --enable-x86-rtcd }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, rnnoise_flags: "" }
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential \
+            clang pkgconf libpipewire-0.3-dev dpkg-dev rpm desktop-file-utils
+
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        run: |
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Debian 12 and Ubuntu do not package RNNoise, so it is linked statically.
+      - name: Build RNNoise
+        run: |
+          curl -fsSLo /tmp/rnnoise.tar.gz \
+            "https://github.com/xiph/rnnoise/releases/download/v$RNNOISE_VERSION/rnnoise-$RNNOISE_VERSION.tar.gz"
+          echo "$RNNOISE_SHA256  /tmp/rnnoise.tar.gz" | sha256sum -c -
+          tar -C /tmp -xzf /tmp/rnnoise.tar.gz
+          cd "/tmp/rnnoise-$RNNOISE_VERSION"
+          ./configure --disable-shared --enable-static --with-pic --disable-examples --disable-doc ${{ matrix.rnnoise_flags }}
+          make -j"$(nproc)"
+          echo "RNNOISE_STATIC_DIR=$PWD/.libs" >> "$GITHUB_ENV"
+          echo "RNNOISE_LICENSE=$PWD/COPYING" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cargo build --release --locked
+          if ldd target/release/otozaned | grep -q rnnoise; then echo "RNNoise linked dynamically"; exit 1; fi
+
+      - name: Test
+        run: cargo test --release --locked --workspace
+
+      - name: Package
+        run: scripts/package-linux.sh "$VERSION" ${{ matrix.arch }} dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate PKGBUILD and checksums
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha() { sha256sum "dist/otozane-v$version-linux-$1.tar.gz" | cut -d' ' -f1; }
+          sed -e "s/@VERSION@/$version/" -e "s/@X86_64_SHA256@/$(sha x86_64)/" -e "s/@AARCH64_SHA256@/$(sha aarch64)/" \
+            packaging/linux/PKGBUILD.in > dist/PKGBUILD
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/* ||
+            gh release upload "$GITHUB_REF_NAME" --clobber dist/*
