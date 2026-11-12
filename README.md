@@ -52,15 +52,20 @@ Then pick **Otozane Microphone** as the input device in your application.
 
 ### Run the service with your session (optional)
 
+Turn on **Settings → Start with session** in the app. It writes
+`~/.config/systemd/user/otozane.service` pointing at the `otozaned` next to the
+app binary and enables it. If you move the binaries, toggle it off and on again.
+
+Manual equivalent:
+
 ```sh
 install -Dm755 target/release/otozaned ~/.local/bin/otozaned
-install -Dm755 target/release/otozane  ~/.local/bin/otozane
 install -Dm644 packaging/otozane.service ~/.config/systemd/user/otozane.service
 systemctl --user daemon-reload
 systemctl --user enable --now otozane
 ```
 
-Nothing is enabled automatically.
+Nothing is enabled until you do one of these.
 
 ## Configuration
 

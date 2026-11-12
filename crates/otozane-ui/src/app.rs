@@ -83,6 +83,7 @@ pub struct App {
     pub browser: Option<String>,
     new_profile: String,
     renaming: Option<(String, String)>,
+    autostart: bool,
 }
 
 impl App {
@@ -117,6 +118,7 @@ impl App {
             browser: (std::env::var("OTOZANE_PAGE").as_deref() == Ok("plugins")).then(String::new),
             new_profile: String::new(),
             renaming: None,
+            autostart: client::autostart_enabled(),
         }
     }
 
@@ -500,6 +502,37 @@ impl App {
                 }
             });
         });
+        section(ui, "Background operation");
+        card(ui, |ui| {
+            ui.label("Audio is processed by the otozaned service and keeps running when this window is closed.");
+            ui.separator();
+            row(
+                ui,
+                "Start with session",
+                Some("Runs otozaned as a systemd user service when you log in"),
+                |ui| {
+                    let mut on = self.autostart;
+                    if widgets::switch(ui, &mut on).changed() {
+                        let running = self.connection == Connection::Connected;
+                        match client::set_autostart(on, !running) {
+                            Ok(()) => self.autostart = on,
+                            Err(e) => self.toasts.push((
+                                format!("Could not change autostart: {e}"),
+                                Instant::now(),
+                                true,
+                            )),
+                        }
+                    }
+                },
+            );
+            ui.separator();
+            if self.status.is_some() {
+                ui.separator();
+                if ui.button(icon_text(icons::POWER, "Stop service")).clicked() {
+                    self.send(Request::Shutdown);
+                }
+            }
+        });
         let Some(st) = self.status.clone() else {
             return;
         };
@@ -520,19 +553,6 @@ impl App {
                     ui.label(format!("{} Hz, {ch}", st.diagnostics.sample_rate));
                 },
             );
-        });
-        section(ui, "Background operation");
-        card(ui, |ui| {
-            ui.label("Audio is processed by the otozaned service and keeps running when this window is closed.");
-            ui.label(
-                RichText::new("To start it with your session, install packaging/otozane.service as a systemd user unit and run `systemctl --user enable --now otozane`.")
-                    .small()
-                    .weak(),
-            );
-            ui.add_space(4.0);
-            if ui.button(icon_text(icons::POWER, "Stop service")).clicked() {
-                self.send(Request::Shutdown);
-            }
         });
         section(ui, "Diagnostics");
         card(ui, |ui| {
