@@ -1,7 +1,7 @@
 use crate::client::{self, Connection, ServiceClient};
 use crate::theme::{self, ThemeChoice};
 use crate::widgets::{self, card, icon, icon_text, row, section};
-use crate::{effects, icons};
+use crate::{chrome, effects, icons};
 use egui::{Frame, Margin, RichText, Ui};
 use otozane_core::config::EffectConfig;
 use otozane_core::protocol::{CaptureState, Request, Status};
@@ -86,6 +86,7 @@ pub struct App {
     autostart: bool,
     has_tray: bool,
     login_window: bool,
+    logo: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -123,6 +124,7 @@ impl App {
             autostart: client::autostart_enabled(),
             has_tray,
             login_window: client::login_window_enabled(),
+            logo: None,
         }
     }
 
@@ -197,25 +199,31 @@ impl App {
 
     fn nav(&mut self, ui: &mut Ui) {
         let p = theme::current(ui.ctx());
-        ui.add_space(4.0);
+        // The sidebar's top strip is part of the title bar.
+        let top = ui
+            .max_rect()
+            .with_max_y(ui.max_rect().top() + chrome::HEIGHT);
+        crate::chrome::drag_area(ui, top.expand2(egui::vec2(12.0, 0.0)));
+        // Centers the 36 px logo row in the title bar strip.
+        ui.add_space((chrome::HEIGHT - 36.0) / 2.0);
         ui.horizontal(|ui| {
-            // App mark: the brand-blue tile from the icon.
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 9.0, p.accent_bg);
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                icons::AUDIO_LINES,
-                egui::FontId::proportional(19.0),
-                egui::Color32::WHITE,
-            );
+            let logo = self.logo.get_or_insert_with(|| {
+                let icon = crate::icon();
+                let img = egui::ColorImage::from_rgba_unmultiplied(
+                    [icon.width as usize, icon.height as usize],
+                    &icon.rgba,
+                );
+                ui.ctx()
+                    .load_texture("logo", img, egui::TextureOptions::LINEAR)
+            });
+            ui.add(egui::Image::new((logo.id(), egui::vec2(36.0, 36.0))));
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.label(widgets::medium("Otozane").size(17.0));
                 ui.label(RichText::new("Microphone processor").small().weak());
             });
         });
-        ui.add_space(20.0);
+        ui.add_space((chrome::HEIGHT - 36.0) / 2.0 + 4.0);
         ui.spacing_mut().item_spacing.y = 4.0;
         for page in Page::ALL {
             let (glyph, label) = page.label();
@@ -875,18 +883,36 @@ impl eframe::App for App {
             .exact_size(216.0)
             .resizable(false)
             .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(p.sidebar)
-                    .inner_margin(Margin::symmetric(12, 14)),
-            )
+            .frame(Frame::new().fill(p.sidebar).inner_margin(Margin {
+                left: 12,
+                right: 12,
+                top: 0,
+                bottom: 14,
+            }))
             .show(ui, |ui| self.nav(ui));
-        egui::CentralPanel::default()
+        egui::Panel::top("titlebar")
+            .exact_size(chrome::HEIGHT)
+            .resizable(false)
+            .show_separator_line(false)
             .frame(
                 Frame::new()
                     .fill(p.window)
-                    .inner_margin(Margin::symmetric(32, 24)),
+                    .inner_margin(Margin::symmetric(14, 0)),
             )
+            .show(ui, |ui| {
+                chrome::drag_area(ui, ui.max_rect().expand2(egui::vec2(14.0, 0.0)));
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    chrome::buttons,
+                );
+            });
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(p.window).inner_margin(Margin {
+                left: 32,
+                right: 32,
+                top: 0,
+                bottom: 24,
+            }))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
@@ -913,6 +939,7 @@ impl eframe::App for App {
                         });
                     });
             });
+        chrome::resize_edges(ui.ctx());
         if !self.toasts.is_empty() {
             egui::Area::new(egui::Id::unique("toasts"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))

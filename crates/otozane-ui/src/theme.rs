@@ -181,6 +181,8 @@ fn style(dark: bool) -> Style {
     }
     w.noninteractive.corner_radius = r8;
     s.visuals = v;
+    // App text is not a document: no I-beam cursor or selection on labels.
+    s.interaction.selectable_labels = false;
     s.spacing.item_spacing = Vec2::new(8.0, 8.0);
     s.spacing.button_padding = Vec2::new(12.0, 7.0);
     s.spacing.interact_size = Vec2::new(36.0, 32.0);
