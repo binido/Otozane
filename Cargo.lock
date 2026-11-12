@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rtrb",
  "serde",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-pipewire"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "otozane-core",
  "pipewire",
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-plugins"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libloading",
  "otozane-core",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "otozane-core",
  "otozane-pipewire",
@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",
