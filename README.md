@@ -1,110 +1,176 @@
-# Otozane
+<p align="center">
+  <img src="packaging/otozane.svg" width="112" height="112" alt="Otozane icon">
+</p>
 
-Otozane is an open-source, real-time microphone processor for Linux. It captures a
-physical microphone through PipeWire, runs it through a chain of effects, and
-publishes the result as a virtual input device, **Otozane Microphone**, that
-Discord, OBS, browsers and other applications can record from.
+<h1 align="center">Otozane</h1>
+
+<p align="center">
+  <b>Real-time microphone processor for Linux.</b><br>
+  Captures a microphone through PipeWire, runs it through an effect chain<br>
+  and publishes the result as a virtual input device.
+</p>
+
+<p align="center">
+  <a href="https://github.com/binido/Otozane/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/binido/Otozane?style=flat-square&color=1c1c1c"></a>
+  <a href="https://github.com/binido/Otozane/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/binido/Otozane/release.yml?style=flat-square&label=build"></a>
+  <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-1c1c1c?style=flat-square">
+  <img alt="Audio: PipeWire" src="https://img.shields.io/badge/audio-PipeWire-1c1c1c?style=flat-square">
+  <img alt="Language: Rust" src="https://img.shields.io/badge/language-Rust-1c1c1c?style=flat-square">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/binido/Otozane?style=flat-square&color=1c1c1c"></a>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#interface">Interface</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#build-from-source">Build from source</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
+    <img src="docs/screenshots/overview-light.png" width="100%" alt="Overview page: processing status, input and output level meters, the signal chain from the physical microphone to Otozane Microphone, and the microphone selector">
+  </picture>
+</p>
+
+## Overview
 
 ```
 Physical microphone → effect chain → Otozane Microphone → applications
 ```
 
-It processes microphone input only. It does not touch system output, other
-applications' audio, or your default devices.
+Otozane creates a virtual input device named **Otozane Microphone**. Discord,
+OBS, browsers and any other application that records from PipeWire can select it
+as a regular microphone.
+
+Scope:
+
+- Processes microphone input only.
+- Does not modify system output, audio of other applications, or default devices.
+- Audio runs in a background service (`otozaned`). The desktop app (`otozane`)
+  is optional and only controls the service.
 
 ## Features
 
-- Virtual microphone (`Otozane Microphone`) owned by the service and removed
-  automatically when it stops.
-- Microphone selection ("Automatic" follows the system default microphone), with automatic recovery when a device is unplugged and
-  plugged back in.
-- Built-in effects: RNNoise noise suppression (with optional voice-activity
-  gate), gain, noise gate, five-band parametric EQ, compressor, lookahead limiter.
-- Reorderable effect chain with live parameter changes and click-free bypass.
-- Voice preset (default for new setups): gain, RNNoise with voice detection,
-  gate, compressor, limiter. Profiles → Presets creates it as a new profile.
-- Profiles: create, rename, delete, switch, export to and import from `.toml` files. The active profile saves automatically.
-- Background service (`otozaned`); the GUI (`otozane`) is optional.
-- egui desktop app with light/dark/system themes, level meters and diagnostics.
-- Tray icon (StatusNotifierItem, needs a tray host such as Waybar, KDE or
-  Noctalia): shows the service state, shows or hides the window, quits the app.
-  With a tray, closing the window hides it; the service keeps running either way.
+| Area | Details |
+|---|---|
+| Virtual device | `Otozane Microphone` is owned by the service and removed when the service stops. |
+| Input | Microphone selection. **Automatic** follows the system default microphone. A device that is unplugged and plugged back in is picked up again. |
+| Built-in effects | RNNoise noise suppression with optional voice-activity gate, gain, noise gate, five-band parametric EQ, compressor, lookahead limiter. |
+| Effect chain | Reorderable. Parameters apply live. Bypass is click-free. |
+| Voice preset | Gain, RNNoise with voice detection, gate, compressor, limiter. Default for new setups; **Profiles → Presets** creates it as a new profile. |
+| Profiles | Create, rename, delete, switch, export to and import from `.toml`. The active profile is saved automatically. |
+| VST3 plugins | Linux builds, for example `lsp-plugins-vst3`. Plugin browser with search, parameters, state stored in profiles. |
+| Desktop app | egui. Light, dark and system themes, level meters, diagnostics. |
+| Tray | StatusNotifierItem. Shows the service state, shows or hides the window, quits the app. Requires a tray host such as Waybar, KDE or Noctalia. |
 
-- VST3 effect plugins (Linux builds, e.g. `lsp-plugins-vst3`): plugin browser
-  with search, parameters, state saved in profiles. Plugins are scanned in
-  separate processes, but run inside the service: a plugin that crashes while
-  processing stops the service. Plugin editor windows are not supported.
+Limitations:
 
-Not implemented yet: JSFX, CLAP, plugin editor windows. See [PLAN.md](PLAN.md).
+- VST3 plugins are scanned in separate processes but run inside the service.
+  A plugin that crashes during processing stops the service.
+- Not implemented: JSFX, CLAP, plugin editor windows. See [PLAN.md](PLAN.md).
+
+## Interface
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/effects-dark.png">
+        <img src="docs/screenshots/effects-light.png" width="100%" alt="Effects page: gain, noise suppression and noise gate cards with sliders, reorder buttons and bypass switches">
+      </picture>
+      <h4>Effects</h4>
+      The chain is processed top to bottom. Each effect can be reordered, removed or bypassed.
+    </td>
+    <td width="33%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/profiles-dark.png">
+        <img src="docs/screenshots/profiles-light.png" width="100%" alt="Profiles page: saved profiles with switch, rename, export and delete actions, a field for a new profile, and the Voice preset">
+      </picture>
+      <h4>Profiles</h4>
+      Saved chains, import and export to <code>.toml</code>, built-in presets.
+    </td>
+    <td width="33%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
+        <img src="docs/screenshots/settings-light.png" width="100%" alt="Settings page: theme selector, start with session, open in tray at login, audio service control, microphone and format">
+      </picture>
+      <h4>Settings</h4>
+      Theme, autostart of the service and the tray app, microphone, audio format.
+    </td>
+  </tr>
+</table>
 
 ## Install
 
-One command picks the right package from the latest
-[release](https://github.com/binido/Otozane/releases) for x86_64 and aarch64:
+The installer selects a package from the latest
+[release](https://github.com/binido/Otozane/releases/latest). Supported
+architectures: x86_64, aarch64.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/binido/Otozane/main/scripts/install.sh | bash
 ```
 
-| Distribution | What it installs |
+| Distribution | Installed package |
 |---|---|
 | Arch, CachyOS, Manjaro, EndeavourOS | `otozane-bin`, built with `makepkg` from the release `PKGBUILD` |
-| Debian 12+, Ubuntu 24.04+, Mint, Pop!_OS | the `.deb` via `apt` |
-| Fedora, openSUSE | the `.rpm` via `dnf` or `zypper` |
-| anything else | the release tarball into `~/.local` |
+| Debian 12+, Ubuntu 24.04+, Mint, Pop!_OS | `.deb` via `apt` |
+| Fedora, openSUSE | `.rpm` via `dnf` or `zypper` |
+| Other | Release tarball into `~/.local` |
 
-Manually, by hand from the release page:
+Runtime requirements: PipeWire 0.3.49+, glibc 2.36+. RNNoise is built into the
+release binaries.
+
+After installation, select **Otozane Microphone** as the input device in the
+application you record with.
+
+<details>
+<summary>Manual installation from the release page</summary>
+
+Arch family:
 
 ```sh
-# Arch family
 mkdir otozane-bin && cd otozane-bin
 curl -fsSLO https://github.com/binido/Otozane/releases/latest/download/PKGBUILD
 makepkg -si
-# Debian/Ubuntu
+```
+
+Debian, Ubuntu:
+
+```sh
 sudo apt install ./otozane_<version>-1_amd64.deb
-# Fedora
+```
+
+Fedora:
+
+```sh
 sudo dnf install ./otozane-<version>-1.x86_64.rpm
-# Any distribution: unpack the tarball, then
-./install.sh            # into ~/.local, or --prefix DIR
+```
+
+Any distribution, from the unpacked tarball:
+
+```sh
+./install.sh                # into ~/.local; use --prefix DIR for another location
 ./install.sh --uninstall
 ```
 
-Packages need PipeWire 0.3.49+ and glibc 2.36+. RNNoise is built into the
-release binaries. Releases are built by `.github/workflows/release.yml` when a
-`vX.Y.Z` tag matching the version in `Cargo.toml` is pushed.
+</details>
 
-## Build requirements
+### Start with the session
 
-- Linux with PipeWire and WirePlumber (developed on CachyOS, PipeWire 1.6).
-- Rust stable (1.85+), `clang` (for PipeWire bindings), `pkgconf`.
-- System libraries: `pipewire`, `rnnoise`. On Arch: `pacman -S pipewire rnnoise clang`.
+Both options are off by default.
 
-## Build and run
+- **Settings → Start with session** writes `~/.config/systemd/user/otozane.service`
+  pointing at the `otozaned` binary next to the app, and enables it. After moving
+  the binaries, turn the option off and on again.
+- **Settings → Open in tray at login** writes `~/.config/autostart/otozane.desktop`,
+  which starts the app with `--hidden` (tray only, no window). Available only
+  while a tray host is running.
 
-```sh
-cargo build --release
-./target/release/otozaned &      # audio service
-./target/release/otozane          # desktop app (can also start the service)
-```
-
-Then pick **Otozane Microphone** as the input device in your application.
-
-To show Otozane in the application menu with its icon:
-
-```sh
-install -Dm644 packaging/otozane.svg ~/.local/share/icons/hicolor/scalable/apps/otozane.svg
-install -Dm644 packaging/otozane.desktop ~/.local/share/applications/otozane.desktop
-```
-
-The desktop entry runs `otozane` from `PATH`.
-
-### Run the service with your session (optional)
-
-Turn on **Settings → Start with session** in the app. It writes
-`~/.config/systemd/user/otozane.service` pointing at the `otozaned` next to the
-app binary and enables it. If you move the binaries, toggle it off and on again.
-
-Manual equivalent:
+<details>
+<summary>Enable the service manually</summary>
 
 ```sh
 install -Dm755 target/release/otozaned ~/.local/bin/otozaned
@@ -113,21 +179,46 @@ systemctl --user daemon-reload
 systemctl --user enable --now otozane
 ```
 
-Nothing is enabled until you do one of these.
+</details>
 
-### Open the app in the tray at login (optional)
+With a tray host, closing the window hides it. The service keeps running in both
+cases.
 
-Turn on **Settings → Open in tray at login**. It writes
-`~/.config/autostart/otozane.desktop`, which starts the app with `--hidden`
-(tray only, no window). The switch is available only while a tray is running.
+## Build from source
+
+Requirements:
+
+- Linux with PipeWire and WirePlumber (developed on CachyOS, PipeWire 1.6).
+- Rust stable 1.85+, `clang` (for PipeWire bindings), `pkgconf`.
+- System libraries `pipewire` and `rnnoise`. On Arch: `pacman -S pipewire rnnoise clang`.
+
+```sh
+cargo build --release
+./target/release/otozaned &      # audio service
+./target/release/otozane          # desktop app; can start the service itself
+```
+
+Add the app to the application menu:
+
+```sh
+install -Dm644 packaging/otozane.svg ~/.local/share/icons/hicolor/scalable/apps/otozane.svg
+install -Dm644 packaging/otozane.desktop ~/.local/share/applications/otozane.desktop
+```
+
+The desktop entry runs `otozane` from `PATH`.
+
+Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+when a `vX.Y.Z` tag matching the version in `Cargo.toml` is pushed.
 
 ## Configuration
 
-Stored under `$XDG_CONFIG_HOME/otozane/` (usually `~/.config/otozane/`):
+Location: `$XDG_CONFIG_HOME/otozane/` (usually `~/.config/otozane/`).
 
-- `config.toml` — selected microphone, processing on/off, active profile, channel count.
-- `profiles/<name>.toml` — effect chains.
-- `ui.toml` — UI theme.
+| File | Contents |
+|---|---|
+| `config.toml` | Selected microphone, processing on/off, active profile, channel count |
+| `profiles/<name>.toml` | Effect chains |
+| `ui.toml` | UI theme |
 
 Example profile:
 
@@ -146,19 +237,23 @@ params = { threshold = -18.0, ratio = 3.0 }
 
 ## Coexistence with EasyEffects
 
-Otozane runs alongside EasyEffects without changing its configuration. If
-EasyEffects' "process all inputs" option is on, it may move recording
-applications onto its own source; Otozane's internal streams opt out of being
-moved, but applications recording from Otozane Microphone may still be moved
-by EasyEffects. Exclude them in EasyEffects if needed.
+Otozane runs alongside EasyEffects and does not change its configuration.
+
+With **Process all inputs** enabled, EasyEffects may move recording applications
+onto its own source. Otozane's internal streams are excluded from this.
+Applications that record from Otozane Microphone can still be moved; exclude them
+in EasyEffects if needed.
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — design and real-time model.
-- [DEVELOPMENT.md](DEVELOPMENT.md) — building, testing, verification scripts.
-- [PLAN.md](PLAN.md) — roadmap and status.
-- [THIRD_PARTY.md](THIRD_PARTY.md) — bundled assets and dependency licenses.
+| Document | Contents |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Design and real-time model |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Building, testing, verification scripts |
+| [PLAN.md](PLAN.md) | Roadmap and status |
+| [THIRD_PARTY.md](THIRD_PARTY.md) | Bundled assets and dependency licenses |
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Bundled fonts and icons keep their own licenses.
+MIT, see [LICENSE](LICENSE). Bundled fonts and icons keep their own licenses,
+listed in [THIRD_PARTY.md](THIRD_PARTY.md).
