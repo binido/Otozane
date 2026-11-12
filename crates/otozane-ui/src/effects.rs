@@ -386,7 +386,7 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
                     "{} files could not be loaded",
                     app.plugins.errors.len()
                 ))
-                .color(p.warning),
+                .color(p.text_weak),
             )
             .show(ui, |ui| {
                 for (path, why) in &app.plugins.errors {
@@ -437,8 +437,7 @@ fn plugin_params(app: &mut App, ui: &mut Ui, i: usize, info: &EffectInfo) {
                         v = idx as f32 / n;
                         idx != before
                     } else {
-                        ui.add(egui::Slider::new(&mut v, 0.0..=1.0).show_value(false))
-                            .changed()
+                        widgets::slider(ui, &mut v, 0.0, 1.0, false).changed()
                     };
                     // The plugin formats the value; it lags one status poll behind edits.
                     let text = info.texts.get(j).map_or("", |s| s.as_str());
@@ -554,13 +553,18 @@ fn param(ui: &mut Ui, spec: &ParamSpec, v: &mut f32, id: u64) -> bool {
             } else {
                 format!(" {}", spec.unit)
             };
-            ui.add(
-                egui::Slider::new(v, spec.min..=spec.max)
-                    .logarithmic(spec.kind == ParamKind::Logarithmic)
-                    .fixed_decimals(decimals)
-                    .suffix(suffix),
-            )
-            .changed()
+            let log = spec.kind == ParamKind::Logarithmic;
+            let a = widgets::slider(ui, v, spec.min, spec.max, log).changed();
+            let b = ui
+                .add(
+                    egui::DragValue::new(v)
+                        .range(spec.min..=spec.max)
+                        .fixed_decimals(decimals)
+                        .suffix(suffix)
+                        .speed(range / 400.0),
+                )
+                .changed();
+            a || b
         }
         ParamKind::Toggle => {
             let mut on = *v >= 0.5;

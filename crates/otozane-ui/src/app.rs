@@ -86,7 +86,7 @@ pub struct App {
     autostart: bool,
     has_tray: bool,
     login_window: bool,
-    logo: Option<egui::TextureHandle>,
+    logo: Option<(bool, egui::TextureHandle)>,
 }
 
 impl App {
@@ -176,12 +176,14 @@ impl App {
         match (&self.connection, &self.status) {
             (Connection::Connected, Some(st)) => match &st.capture {
                 CaptureState::Running(d) if !st.processing_enabled => {
-                    (p.warning, "Bypassed", device_label(st, Some(d)))
+                    (p.text_weak, "Bypassed", device_label(st, Some(d)))
                 }
-                CaptureState::Running(d) => (p.success, "Processing", device_label(st, Some(d))),
-                CaptureState::Connecting(d) => (p.warning, "Connecting", device_label(st, Some(d))),
+                CaptureState::Running(d) => (p.accent, "Processing", device_label(st, Some(d))),
+                CaptureState::Connecting(d) => {
+                    (p.text_weak, "Connecting", device_label(st, Some(d)))
+                }
                 CaptureState::WaitingForDevice(d) => (
-                    p.warning,
+                    p.text_weak,
                     "Waiting for microphone",
                     d.as_deref().map_or("No microphone found".to_string(), |d| {
                         format!("{d} is not connected")
@@ -207,15 +209,28 @@ impl App {
         // Centers the 36 px logo row in the title bar strip.
         ui.add_space((chrome::HEIGHT - 36.0) / 2.0);
         ui.horizontal(|ui| {
-            let logo = self.logo.get_or_insert_with(|| {
+            let dark = ui.visuals().dark_mode;
+            if self.logo.as_ref().is_none_or(|(d, _)| *d != dark) {
+                // The icon is a dark tile; on a dark sidebar show it inverted.
                 let icon = crate::icon();
+                let mut rgba = icon.rgba;
+                if dark {
+                    for px in rgba.as_chunks_mut::<4>().0 {
+                        for c in &mut px[..3] {
+                            *c = 255 - *c;
+                        }
+                    }
+                }
                 let img = egui::ColorImage::from_rgba_unmultiplied(
                     [icon.width as usize, icon.height as usize],
-                    &icon.rgba,
+                    &rgba,
                 );
-                ui.ctx()
-                    .load_texture("logo", img, egui::TextureOptions::LINEAR)
-            });
+                let tex = ui
+                    .ctx()
+                    .load_texture("logo", img, egui::TextureOptions::LINEAR);
+                self.logo = Some((dark, tex));
+            }
+            let logo = &self.logo.as_ref().unwrap().1;
             ui.add(egui::Image::new((logo.id(), egui::vec2(36.0, 36.0))));
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -230,7 +245,7 @@ impl App {
             let selected = self.page == page;
             let (text, fill) = if selected {
                 (
-                    widgets::medium(icon_text(glyph, label)).color(p.accent),
+                    widgets::medium(icon_text(glyph, label)).color(p.text),
                     p.accent_soft,
                 )
             } else {
@@ -242,8 +257,8 @@ impl App {
             let b = egui::Button::new(text)
                 .fill(fill)
                 .frame_when_inactive(selected)
-                .corner_radius(10)
-                .min_size(egui::vec2(ui.available_width(), 38.0));
+                .corner_radius(24)
+                .min_size(egui::vec2(ui.available_width(), 48.0));
             if ui.add(b).clicked() {
                 self.page = page;
             }
@@ -252,9 +267,8 @@ impl App {
             let (color, title, detail) = self.state(&p);
             Frame::new()
                 .fill(p.card)
-                .stroke(egui::Stroke::new(1.0, p.border))
-                .corner_radius(12)
-                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(16)
+                .inner_margin(Margin::symmetric(12, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     // Bottom-up layout: the last item added sits on top.
@@ -360,13 +374,13 @@ impl App {
                 let (glyph, c, text) = if st.virtual_source_ready {
                     (
                         icons::CIRCLE_CHECK,
-                        p.success,
+                        p.accent,
                         "Apps can record from \u{201c}Otozane Microphone\u{201d}",
                     )
                 } else {
                     (
                         icons::CIRCLE_ALERT,
-                        p.warning,
+                        p.text_weak,
                         "Virtual microphone is not ready",
                     )
                 };
@@ -432,14 +446,16 @@ impl App {
                     fill: egui::Color32,
                     fg: egui::Color32,
                     strike: bool| {
+            // M3 filter chip: tonal when selected, outlined otherwise.
             let mut text = RichText::new(icon_text(glyph, label)).color(fg);
+            let mut b = egui::Button::new(text.clone());
             if strike {
                 text = text.strikethrough();
+                b = egui::Button::new(text).stroke(egui::Stroke::new(1.0, p.outline));
             }
             ui.add(
-                egui::Button::new(text)
-                    .fill(fill)
-                    .corner_radius(255)
+                b.fill(fill)
+                    .corner_radius(8)
                     .min_size(egui::vec2(0.0, 32.0)),
             )
         };
@@ -458,9 +474,9 @@ impl App {
                 let e = &self.chain[i];
                 let on = e.enabled;
                 let (fill, fg) = if on {
-                    (p.accent_soft, p.accent)
+                    (p.accent_soft, p.text)
                 } else {
-                    (p.raised, p.text_weak)
+                    (egui::Color32::TRANSPARENT, p.text_weak)
                 };
                 let tip = if on {
                     "Click to bypass"
@@ -630,7 +646,7 @@ impl App {
                         if widgets::icon_button(ui, icons::PENCIL, "Rename").clicked() {
                             self.renaming = Some((name.clone(), name.clone()));
                         }
-                        if !is_active && ui.button("Switch to").clicked() {
+                        if !is_active && ui.add(widgets::tonal(ui, "Switch to")).clicked() {
                             self.send(Request::LoadProfile { name: name.clone() });
                         }
                     });
@@ -680,7 +696,7 @@ impl App {
                     ui.label(RichText::new("Gain, noise suppression with voice detection, gate, compressor, limiter").small().weak());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(icon_text(icons::PLUS, "Create")).on_hover_text("Creates a new profile from this preset").clicked() {
+                    if ui.add(widgets::tonal(ui, icon_text(icons::PLUS, "Create"))).on_hover_text("Creates a new profile from this preset").clicked() {
                         // Keeps the current profile: switch to a new one, then fill it.
                         let name = unique_name(&self.profiles, "Voice");
                         self.send(Request::SaveProfileAs { name });
@@ -945,17 +961,20 @@ impl eframe::App for App {
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
                 .show(ui.ctx(), |ui| {
                     for (msg, _, is_error) in &self.toasts {
-                        let (glyph, color) = if *is_error {
-                            (icons::CIRCLE_ALERT, p.error)
+                        let glyph = if *is_error {
+                            icons::CIRCLE_ALERT
                         } else {
-                            (icons::CIRCLE_CHECK, p.success)
+                            icons::CIRCLE_CHECK
                         };
+                        // M3 snackbar: inverse surface.
                         Frame::popup(ui.style())
-                            .inner_margin(Margin::symmetric(14, 10))
+                            .fill(p.inverse)
+                            .corner_radius(8)
+                            .inner_margin(Margin::symmetric(16, 12))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(icon(glyph, 16.0).color(color));
-                                    ui.label(msg);
+                                    ui.label(icon(glyph, 16.0).color(p.on_inverse));
+                                    ui.label(RichText::new(msg).color(p.on_inverse));
                                 });
                             });
                     }
