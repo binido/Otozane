@@ -20,6 +20,7 @@ jobs:
     # Debian 12 sets the floor: glibc 2.36 and PipeWire 0.3.65.
     container: debian:bookworm
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { arch: x86_64, runner: ubuntu-24.04, rnnoise_flags: --enable-x86-rtcd }
@@ -31,7 +32,7 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates curl git build-essential \
             clang pkgconf libpipewire-0.3-dev dpkg-dev rpm desktop-file-utils
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check the tag matches Cargo.toml
         run: |
@@ -52,6 +53,8 @@ jobs:
           echo "$RNNOISE_SHA256  /tmp/rnnoise.tar.gz" | sha256sum -c -
           tar -C /tmp -xzf /tmp/rnnoise.tar.gz
           cd "/tmp/rnnoise-$RNNOISE_VERSION"
+          # The 0.2 tarball misses os_support.h, which the NEON code includes.
+          printf '#include "common.h"\n#define OPUS_CLEAR(dst, n) RNN_CLEAR(dst, n)\n' > src/os_support.h
           ./configure --disable-shared --enable-static --with-pic --disable-examples --disable-doc ${{ matrix.rnnoise_flags }}
           make -j"$(nproc)"
           echo "RNNOISE_STATIC_DIR=$PWD/.libs" >> "$GITHUB_ENV"
@@ -77,7 +80,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
         with:
