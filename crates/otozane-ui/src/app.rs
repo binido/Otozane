@@ -446,6 +446,18 @@ impl App {
                         });
                 },
             );
+            widgets::divider(ui);
+            row(
+                ui,
+                "Listen to myself",
+                Some("Plays the processed microphone to your output. Use headphones"),
+                |ui| {
+                    let mut on = st.monitoring;
+                    if widgets::switch(ui, &mut on).changed() {
+                        self.send(Request::SetMonitor { on });
+                    }
+                },
+            );
         });
     }
 

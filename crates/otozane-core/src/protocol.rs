@@ -20,6 +20,10 @@ pub enum Request {
     SetMuted {
         muted: bool,
     },
+    /// Plays the processed microphone to the system default output. Not saved.
+    SetMonitor {
+        on: bool,
+    },
     SetChain {
         chain: Vec<EffectConfig>,
     },
@@ -161,6 +165,8 @@ pub struct Status {
     pub processing_enabled: bool,
     #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
+    pub monitoring: bool,
     /// Peak levels (linear) since the previous status request.
     pub input_peak: f32,
     pub output_peak: f32,
