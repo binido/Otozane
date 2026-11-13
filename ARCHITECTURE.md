@@ -31,6 +31,8 @@ that drives `engine::Engine` from its audio callback.
 - **Virtual microphone** is a `support.null-audio-sink` adapter created by the
   service with `media.class = Audio/Source/Virtual` and `object.linger = false`,
   so PipeWire removes it when the service exits or crashes.
+- The capture stream requests `node.latency = 1024/48000`, so the graph
+  quantum stays at or below one engine block (see Hush below).
 - **Output stream** is not autoconnected; the backend links its ports to the
   virtual microphone's input ports itself (client-owned links), because
   WirePlumber will not link a playback stream into a source node.
@@ -78,6 +80,9 @@ Rules followed on the audio thread:
 - Each chain slot crossfades between processed and dry signal over 10 ms when
   enabled/disabled. The dry path is delayed by the effect's latency, so
   bypassing RNNoise or the limiter does not shift audio in time.
+- A fully bypassed effect is not processed. When it is re-enabled, the slot
+  stays dry for the effect's latency before fading in, so audio left in the
+  effect's buffers from before the bypass is never heard.
 - Effects that are removed are faded out (disabled, then removed 15 ms later).
 - Gain ramps per block; dynamics effects smooth their gain per sample.
 - Reordering is applied instantly and can produce a small discontinuity.
@@ -85,7 +90,8 @@ Rules followed on the audio thread:
 ### Latency
 
 Reported in Settings → Diagnostics: capture quantum + effect latency
-(RNNoise 480 frames, limiter 240 frames) + audio queued between streams.
+(RNNoise 480 frames, Hush 2119 frames, limiter 240 frames) + audio queued
+between streams.
 
 ## Effects
 
@@ -97,11 +103,54 @@ The UI renders controls from these specs, so adding an effect needs no UI code
 | Effect | Notes |
 |--------|-------|
 | RNNoise | FFI to system `librnnoise`; 480-sample frames, one frame latency regardless of host block size; wet/dry mix; optional VAD gate with grace period |
+| Hush | FFI to the official `libweya_nc` (DeepFilterNet-based, 16 kHz), loaded at runtime; suppresses noise and competing speakers; wet/dry mix; see below |
 | Gain | ±36 dB, per-block ramp |
 | Noise gate | Linked peak detector, hysteresis, hold, attack/release, range |
 | Equalizer | 5 RBJ biquad bands (peak, shelves, low/high pass); coefficients recomputed only on change |
 | Compressor | Feed-forward, soft knee, log-domain attack/release, makeup |
 | Limiter | 5 ms lookahead, hold, release, final clamp to the ceiling |
+
+### Hush
+
+Hush (Weya AI) is a DeepFilterNet3 model fine-tuned to keep one speaker and
+suppress background noise and other voices. Otozane uses the project's own C
+library, `libweya_nc`, built from the pinned Hush sources by
+`scripts/build-hush.sh`, and its `advanced_dfnet16k` model bundle.
+
+- **Loading.** `EffectKind::create` loads the library with `libloading` and
+  the model once per process (on the controller thread), then creates one
+  session per channel. The files are looked up in `$OTOZANE_HUSH_DIR`,
+  `<binary dir>/../lib/otozane/hush` (packages, `~/.local` installs) and
+  `third_party/hush` in the source tree (development). If they are missing or
+  fail to load, the slot becomes a pass-through with the error on its card;
+  its parameters are kept in the profile. A failed load is not cached.
+- **Worker thread.** `weya_nc_process_frame` allocates on every call (tract
+  creates tensors per run), so it never runs on the audio thread. The audio
+  thread sends 10 ms frames (160 samples at 16 kHz) to a `hush` worker thread
+  through an `rtrb` queue, wakes it with `Thread::unpark`, and reads finished
+  frames from a second queue. Frames carry sequence numbers; a frame that has
+  not come back when it is due is played dry (the effect's own latency-aligned
+  dry signal) and its late result is dropped, so latency never changes.
+- **Budget.** A frame completed during one host callback can only be used in a
+  later one, so results are read 345 samples at 16 kHz (1035 at 48 kHz) after
+  the frame is complete: more than one 1024-frame quantum. This is why the
+  capture stream caps the quantum at 1024. With larger forced quanta Hush
+  falls back to dry audio for the frames that miss the deadline.
+- **Resampling.** 48 kHz to 16 kHz and back with a 127-tap linear-phase
+  windowed-sinc low-pass (7.6 kHz, Blackman), polyphase on the way up, with
+  state kept across callbacks. The library's own resampler is not used: it
+  interpolates each frame on its own (linear, endpoints stretched), which is
+  not continuous across frames.
+- **Latency** is constant: 3 × (160 frame + 345 budget + 160 model STFT delay)
+  + 124 filter delay = 2119 frames (44 ms). The 160-sample model delay was
+  measured with the real model.
+- **Channels.** Each channel has its own session (stereo costs twice the CPU).
+- **Parameters.** Only Mix (wet/dry, applied to the latency-aligned dry
+  signal). The library's attenuation limit is set at session creation and is
+  the same blend in the STFT domain, so it is not exposed separately. The
+  meter shows the model's estimate of the input's speech-to-noise ratio.
+- **Failure modes.** `libweya_nc` is built with `panic = "abort"`: a panic
+  inside it would stop the service (like a crashing plugin).
 
 ## Service and IPC
 

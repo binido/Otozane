@@ -6,6 +6,7 @@ Arch/CachyOS packages: `rust`, `clang`, `pkgconf`, `pipewire`, `rnnoise`.
 Optional for scripts: `python`, `python-pillow` (screenshots), `python-fonttools` (icons).
 
 ```sh
+scripts/build-hush.sh    # once: Hush runtime into third_party/hush (Hush tests skip without it)
 cargo build
 cargo test --workspace
 cargo clippy --workspace --all-targets
@@ -36,6 +37,7 @@ path, also used by the UI and `scripts/ipc.py`) and `OTOZANE_NODE_PREFIX`
 | `scripts/ipc.py JSON...` | Sends raw requests to the running service. |
 | `scripts/screenshot.sh OUT.png [page] [dark\|light]` | Renders the UI and saves a screenshot (uses `OTOZANE_SCREENSHOT`, `OTOZANE_PAGE`, `OTOZANE_THEME`). |
 | `scripts/icons.py` | Regenerates the Lucide font subset and `src/icons.rs`. |
+| `scripts/build-hush.sh [OUT_DIR]` | Builds `libweya_nc.so` from the pinned Hush commit and copies it with the model and licences (default `third_party/hush`). `OTOZANE_HUSH_DIR` points the service at another directory. |
 
 Example checks used during development:
 
@@ -46,6 +48,10 @@ scripts/e2e.sh "" '[{"id":1,"kind":"gain","params":{"gain":6}}]'
 # RNNoise on white noise: output should fall to silence after ~0.5 s.
 python3 scripts/tone.py /tmp/noise.wav 4 0.1 noise
 scripts/e2e.sh /tmp/noise.wav '[{"id":1,"kind":"rnnoise"}]'
+
+# Hush: CPU use and worst 10 ms block on this machine.
+cargo test --release -p otozane-core hush::tests::bench -- --ignored --nocapture
+scripts/e2e.sh /tmp/noise.wav '[{"id":1,"kind":"hush"}]'
 
 # Service requests
 python3 scripts/ipc.py '{"cmd":"status"}'

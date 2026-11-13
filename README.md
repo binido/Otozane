@@ -58,7 +58,7 @@ Scope:
 |---|---|
 | Virtual device | `Otozane Microphone` is owned by the service and removed when the service stops. |
 | Input | Microphone selection. **Automatic** follows the system default microphone. A device that is unplugged and plugged back in is picked up again. |
-| Built-in effects | RNNoise noise suppression with optional voice-activity gate, gain, noise gate, five-band parametric EQ, compressor, lookahead limiter. |
+| Built-in effects | RNNoise noise suppression with optional voice-activity gate, Hush noise and background-speaker suppression, gain, noise gate, five-band parametric EQ, compressor, lookahead limiter. |
 | Effect chain | Reorderable. Parameters apply live. Bypass is click-free and a bypassed effect uses no CPU. |
 | Modes | **On**, **No effects** (microphone passes through unchanged), **Muted** (capture stops, `Otozane Microphone` outputs silence, almost no CPU). Muted is not remembered: the service always starts unmuted. |
 | Voice preset | Gain, RNNoise with voice detection, gate, compressor, limiter. Default for new setups; **Profiles → Presets** creates it as a new profile. |
@@ -122,7 +122,7 @@ curl -fsSL https://raw.githubusercontent.com/binido/Otozane/main/scripts/install
 | Other | Release tarball into `~/.local` |
 
 Runtime requirements: PipeWire 0.3.49+, glibc 2.36+. RNNoise is built into the
-release binaries.
+release binaries; the Hush runtime and model ship in `/usr/lib/otozane/hush/`.
 
 After installation, select **Otozane Microphone** as the input device in the
 application you record with.
@@ -192,6 +192,9 @@ Requirements:
 - Linux with PipeWire and WirePlumber (developed on CachyOS, PipeWire 1.6).
 - Rust stable 1.85+, `clang` (for PipeWire bindings), `pkgconf`.
 - System libraries `pipewire` and `rnnoise`. On Arch: `pacman -S pipewire rnnoise clang`.
+- For Hush Noise Suppression: `git` and `scripts/build-hush.sh`, which builds
+  the Hush runtime from source into `third_party/hush` (about 2 minutes). Without
+  it Otozane works, and a Hush effect shows "Hush is not installed".
 
 ```sh
 cargo build --release
