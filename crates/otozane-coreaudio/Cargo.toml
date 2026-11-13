@@ -1,0 +1,13 @@
+[package]
+name = "otozane-coreaudio"
+description = "Core Audio backend for Otozane (macOS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+otozane-core.workspace = true
+rtrb.workspace = true
+cpal = "0.18.2"
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
+objc2-core-foundation = { version = "0.3.1", default-features = false, features = ["std", "CFString"] }

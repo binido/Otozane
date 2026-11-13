@@ -11,8 +11,13 @@ path = "src/main.rs"
 
 [dependencies]
 otozane-core.workspace = true
-otozane-pipewire.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 otozane-plugins = { path = "../otozane-plugins" }
 serde.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+otozane-pipewire.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+otozane-coreaudio = { path = "../otozane-coreaudio" }

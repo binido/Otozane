@@ -235,11 +235,13 @@ fn session(
     }
 }
 
+#[cfg(target_os = "linux")]
 const UNIT: &str = include_str!("../../../packaging/otozane.service");
+#[cfg(target_os = "linux")]
 const UNIT_EXEC: &str = "%h/.local/bin/otozaned";
 
 /// `otozaned` next to the current executable, if present.
-fn local_service() -> Option<std::path::PathBuf> {
+pub(crate) fn local_service() -> Option<std::path::PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("otozaned")))
@@ -252,6 +254,7 @@ fn config_home() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
 }
 
+#[cfg(target_os = "linux")]
 fn unit_path() -> Option<std::path::PathBuf> {
     Some(config_home()?.join("systemd/user/otozane.service"))
 }
@@ -297,6 +300,7 @@ pub fn set_login_window(on: bool) -> std::io::Result<()> {
 }
 
 /// The unit file with `ExecStart` pointing at `service`.
+#[cfg(target_os = "linux")]
 fn unit_text(service: Option<&std::path::Path>) -> String {
     match service {
         Some(p) => {
@@ -307,6 +311,7 @@ fn unit_text(service: Option<&std::path::Path>) -> String {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn systemctl(args: &[&str]) -> std::io::Result<()> {
     let out = std::process::Command::new("systemctl")
         .arg("--user")
@@ -322,6 +327,7 @@ fn systemctl(args: &[&str]) -> std::io::Result<()> {
 }
 
 /// Whether the systemd user unit starts the service with the session.
+#[cfg(target_os = "linux")]
 pub fn autostart_enabled() -> bool {
     systemctl(&["is-enabled", "--quiet", "otozane.service"]).is_ok()
 }
@@ -329,6 +335,7 @@ pub fn autostart_enabled() -> bool {
 /// Installs and enables the user unit, or disables it. `start_now` also
 /// starts it; pass false while another instance is running, since the unit
 /// would fail on the single-instance lock.
+#[cfg(target_os = "linux")]
 pub fn set_autostart(on: bool, start_now: bool) -> std::io::Result<()> {
     if !on {
         return systemctl(&["disable", "otozane.service"]);
@@ -347,6 +354,7 @@ pub fn set_autostart(on: bool, start_now: bool) -> std::io::Result<()> {
 /// Starts `otozaned`: through systemd when the user unit is installed, so
 /// systemd owns the process, otherwise detached from this process, from next
 /// to the current executable if present, else from `PATH`.
+#[cfg(target_os = "linux")]
 pub fn start_service() -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     if unit_path().is_some_and(|p| p.exists()) {
@@ -366,6 +374,9 @@ pub fn start_service() -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
+#[cfg(target_os = "macos")]
+pub use crate::launchd::{autostart_enabled, set_autostart, start_service};
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -380,6 +391,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn unit_points_at_local_service() {
         let text = super::unit_text(Some(std::path::Path::new("/opt/my dir/50%/otozaned")));

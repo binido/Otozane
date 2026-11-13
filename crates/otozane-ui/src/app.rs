@@ -382,13 +382,22 @@ impl App {
                     (
                         icons::CIRCLE_CHECK,
                         p.accent,
-                        "Apps can record from \u{201c}Otozane Microphone\u{201d}",
+                        format!(
+                            "Apps can record from \u{201c}{}\u{201d}",
+                            otozane_core::VIRTUAL_DEVICE
+                        ),
+                    )
+                } else if cfg!(target_os = "macos") {
+                    (
+                        icons::CIRCLE_ALERT,
+                        p.text_weak,
+                        "BlackHole 2ch is not installed: brew install blackhole-2ch".into(),
                     )
                 } else {
                     (
                         icons::CIRCLE_ALERT,
                         p.text_weak,
-                        "Virtual microphone is not ready",
+                        "Virtual microphone is not ready".into(),
                     )
                 };
                 ui.label(icon(glyph, 14.0).color(c));
@@ -533,7 +542,7 @@ impl App {
             chip(
                 ui,
                 icons::RADIO,
-                "Otozane Microphone",
+                otozane_core::VIRTUAL_DEVICE,
                 p.raised,
                 p.text,
                 false,
@@ -776,27 +785,30 @@ impl App {
                     }
                 },
             );
-            widgets::divider(ui);
-            let hint = if self.has_tray {
-                "Starts this window hidden in the tray when you log in"
-            } else {
-                "Needs a system tray, none is running"
-            };
-            row(ui, "Open in tray at login", Some(hint), |ui| {
-                let mut on = self.login_window;
-                ui.add_enabled_ui(self.has_tray || on, |ui| {
-                    if widgets::switch(ui, &mut on).changed() {
-                        match client::set_login_window(on) {
-                            Ok(()) => self.login_window = on,
-                            Err(e) => self.toasts.push((
-                                format!("Could not change login autostart: {e}"),
-                                Instant::now(),
-                                true,
-                            )),
+            // macOS has no tray, so the window cannot start hidden.
+            if !cfg!(target_os = "macos") {
+                widgets::divider(ui);
+                let hint = if self.has_tray {
+                    "Starts this window hidden in the tray when you log in"
+                } else {
+                    "Needs a system tray, none is running"
+                };
+                row(ui, "Open in tray at login", Some(hint), |ui| {
+                    let mut on = self.login_window;
+                    ui.add_enabled_ui(self.has_tray || on, |ui| {
+                        if widgets::switch(ui, &mut on).changed() {
+                            match client::set_login_window(on) {
+                                Ok(()) => self.login_window = on,
+                                Err(e) => self.toasts.push((
+                                    format!("Could not change login autostart: {e}"),
+                                    Instant::now(),
+                                    true,
+                                )),
+                            }
                         }
-                    }
+                    });
                 });
-            });
+            }
             if self.status.is_some() {
                 widgets::divider(ui);
                 let sub = if self.has_tray {

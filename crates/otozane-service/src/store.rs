@@ -1,4 +1,4 @@
-//! Settings and profile files under `$XDG_CONFIG_HOME/otozane/`.
+//! Settings and profile files under `config_dir()`.
 
 use otozane_core::config::{Profile, Settings};
 use std::io;

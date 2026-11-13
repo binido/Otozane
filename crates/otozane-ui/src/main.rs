@@ -9,7 +9,10 @@ mod client;
 mod effects;
 #[allow(dead_code)] // generated table, not every icon is used yet
 mod icons;
+#[cfg(target_os = "macos")]
+mod launchd;
 mod theme;
+#[cfg(target_os = "linux")]
 mod tray;
 mod widgets;
 
@@ -19,7 +22,7 @@ pub fn icon() -> egui::IconData {
         .expect("bundled icon is a valid PNG")
 }
 
-fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
+fn options() -> eframe::NativeOptions {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Otozane")
@@ -41,11 +44,25 @@ fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
             .with_max_inner_size(size)
             .with_resizable(false);
     }
+    options
+}
+
+#[cfg(target_os = "macos")]
+fn main() -> eframe::Result {
+    eframe::run_native(
+        "Otozane",
+        options(),
+        Box::new(|cc| Ok(Box::new(app::App::new(cc, false)))),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
     let has_tray = tray.is_some();
     let tray_cc = tray.cloned();
     let result = eframe::run_native(
         "Otozane",
-        options,
+        options(),
         Box::new(move |cc| {
             if let Some(t) = tray_cc {
                 let ctx = cc.egui_ctx.clone();
@@ -60,6 +77,7 @@ fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
     result
 }
 
+#[cfg(target_os = "linux")]
 fn main() -> eframe::Result {
     let hidden = std::env::args().any(|a| a == "--hidden");
     let (tx, rx) = std::sync::mpsc::channel();
