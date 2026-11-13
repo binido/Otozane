@@ -88,3 +88,13 @@ The UI picks up parameters from the specs.
 ## Commit style
 
 [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description`.
+
+## Releasing
+
+1. Add a `## X.Y.Z - YYYY-MM-DD` section to `CHANGELOG.md`: what is new, what
+   was fixed, written for users. The release workflow publishes it as the
+   GitHub release notes and fails without it (`scripts/release-notes.sh X.Y.Z`
+   prints it locally).
+2. Set `version` in `Cargo.toml`, build to refresh `Cargo.lock`, commit
+   `chore: release X.Y.Z`.
+3. Tag `vX.Y.Z` and push the branch and the tag.
