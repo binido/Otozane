@@ -628,6 +628,10 @@ fn create_capture(
             // External tools (e.g. EasyEffects "process all inputs") retarget
             // streams through metadata; this capture must stay on its device.
             "node.dont-move" => "true",
+            // Cap the graph quantum at one engine block (PipeWire may otherwise
+            // raise it to max-quantum, 2048 by default). Hush relies on this:
+            // its worker gets one block of time per frame.
+            *pw::keys::NODE_LATENCY => "1024/48000",
         },
     )?;
     let (rt, counters, st, name) = (

@@ -60,6 +60,10 @@ jobs:
           echo "RNNOISE_STATIC_DIR=$PWD/.libs" >> "$GITHUB_ENV"
           echo "RNNOISE_LICENSE=$PWD/COPYING" >> "$GITHUB_ENV"
 
+      # Hush runtime (libweya_nc + model), built from the pinned Hush sources.
+      - name: Build Hush
+        run: scripts/build-hush.sh third_party/hush
+
       - name: Build
         run: |
           cargo build --release --locked

@@ -6,7 +6,7 @@ Status legend: [x] done, [~] partial, [ ] not started.
 
 | Crate | Role |
 |-------|------|
-| `otozane-core` | Platform-independent DSP engine, built-in effects, RNNoise FFI, chain, config/profile model, IPC protocol types |
+| `otozane-core` | Platform-independent DSP engine, built-in effects, RNNoise and Hush FFI, chain, config/profile model, IPC protocol types |
 | `otozane-pipewire` | Linux backend: device discovery, capture stream, `Otozane Microphone` virtual source |
 | `otozane-service` | `otozaned` background service: owns the engine and backend, persists config, serves IPC over a Unix socket |
 | `otozane-ui` | `otozane` egui desktop app, talks to the service over IPC |
@@ -16,6 +16,7 @@ Status legend: [x] done, [~] partial, [ ] not started.
 
 1. [x] Functional pipeline: workspace, engine, PipeWire capture, virtual source, gain. Verified with `scripts/e2e.sh` (`pw-record` receives the processed signal).
 2. [x] RNNoise: FFI to system `librnnoise`, 480-sample framing, mix, VAD gate. Verified suppressing white noise end to end.
+2a. [x] Hush: runtime-loaded `libweya_nc` (built from source), worker thread with fixed latency, stateful 48/16 kHz resampling, bundled in packages. Verified end to end (no late frames at quantum 1024; competing speaker alone -13 dB vs -0.4 dB with RNNoise).
 3. [x] Desktop UI: egui theme, Space Grotesk, Lucide icons, device selection, meters, IPC client.
 4. [x] DSP and profiles: gate, parametric EQ (with response curve), compressor, limiter, chain editor with drag-and-drop, profile management.
 5. [~] Plugin hosting. Done: VST3 (scan in a separate process per bundle, load, process, parameters, state in profiles, bypass, latency, load errors shown on the effect card, plugin browser). Verified with LSP plugins (`tests/lsp.rs`, and `scripts/e2e.sh` with LSP Limiter). Open: JSFX via ysfx (source in `third_party/ysfx`, not built yet); latency changes reported by a plugin at runtime are ignored until it is re-added; plugin editor windows.

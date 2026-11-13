@@ -3,6 +3,7 @@
 mod dynamics;
 pub mod eq;
 mod gain;
+pub mod hush;
 pub mod rnnoise;
 
 use crate::param::ParamSpec;
@@ -41,6 +42,7 @@ pub trait Processor: Send {
 pub enum EffectKind {
     Gain,
     Rnnoise,
+    Hush,
     Gate,
     Equalizer,
     Compressor,
@@ -52,6 +54,7 @@ pub enum EffectKind {
 impl EffectKind {
     pub const ALL: &'static [EffectKind] = &[
         EffectKind::Rnnoise,
+        EffectKind::Hush,
         EffectKind::Gate,
         EffectKind::Equalizer,
         EffectKind::Compressor,
@@ -63,6 +66,7 @@ impl EffectKind {
         match self {
             EffectKind::Gain => "Gain",
             EffectKind::Rnnoise => "Noise Suppression",
+            EffectKind::Hush => "Hush Noise Suppression",
             EffectKind::Gate => "Noise Gate",
             EffectKind::Equalizer => "Equalizer",
             EffectKind::Compressor => "Compressor",
@@ -75,6 +79,7 @@ impl EffectKind {
         match self {
             EffectKind::Gain => gain::PARAMS,
             EffectKind::Rnnoise => rnnoise::PARAMS,
+            EffectKind::Hush => hush::PARAMS,
             EffectKind::Gate => dynamics::GATE_PARAMS,
             EffectKind::Equalizer => eq::PARAMS,
             EffectKind::Compressor => dynamics::COMPRESSOR_PARAMS,
@@ -91,22 +96,30 @@ impl EffectKind {
             EffectKind::Gate => Some(("Gain", "dB")),
             EffectKind::Compressor | EffectKind::Limiter => Some(("Reduction", "dB")),
             EffectKind::Rnnoise => Some(("Voice", "%")),
+            EffectKind::Hush => Some(("SNR", "dB")),
         }
     }
 
     /// Creates a processor. Call this off the audio thread: it allocates.
-    pub fn create(self, sample_rate: f32, channels: usize, max_block: usize) -> Box<dyn Processor> {
+    /// Fails only for effects that load external files (Hush).
+    pub fn create(
+        self,
+        sample_rate: f32,
+        channels: usize,
+        max_block: usize,
+    ) -> Result<Box<dyn Processor>, String> {
         let _ = max_block;
-        match self {
+        Ok(match self {
             EffectKind::Gain => Box::new(gain::Gain::default()),
             EffectKind::Rnnoise => Box::new(rnnoise::Rnnoise::new(channels)),
+            EffectKind::Hush => Box::new(hush::Hush::new(channels)?),
             EffectKind::Gate => Box::new(dynamics::Gate::new(sample_rate)),
             EffectKind::Equalizer => Box::new(eq::Equalizer::new(sample_rate, channels)),
             EffectKind::Compressor => Box::new(dynamics::Compressor::new(sample_rate)),
             EffectKind::Limiter => Box::new(dynamics::Limiter::new(sample_rate, channels)),
             // Plugins are created by the host through `engine::Controller::set_chain`.
             EffectKind::Plugin => Box::new(Passthrough),
-        }
+        })
     }
 }
 
@@ -138,7 +151,14 @@ mod tests {
                         .iter()
                         .map(|s| s.min + (s.max - s.min) * extreme)
                         .collect();
-                    let mut p = kind.create(48000.0, channels, 1024);
+                    let mut p = match kind.create(48000.0, channels, 1024) {
+                        Ok(p) => p,
+                        // Hush without its runtime installed; covered in hush.rs.
+                        Err(e) => {
+                            eprintln!("skipping {kind:?}: {e}");
+                            continue;
+                        }
+                    };
                     let mut seed = 1u32;
                     for n in [0usize, 1, 7, 128, 479, 480, 481, 1024] {
                         let mut bufs: Vec<Vec<f32>> = (0..channels)

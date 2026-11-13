@@ -2,6 +2,7 @@
 # Builds the release packages from already built binaries in target/release.
 # Usage: scripts/package-linux.sh VERSION ARCH OUT_DIR   (ARCH: x86_64 | aarch64)
 # Env: RNNOISE_LICENSE - RNNoise COPYING file, shipped when RNNoise is linked statically.
+#      HUSH_DIR - output of scripts/build-hush.sh (default third_party/hush); required.
 # Writes otozane-vVERSION-linux-ARCH.tar.gz, .deb (needs dpkg-dev) and .rpm (needs rpmbuild).
 set -euo pipefail
 
@@ -14,6 +15,8 @@ case "$arch" in
 esac
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+hush="${HUSH_DIR:-$root/third_party/hush}"
+[[ -f "$hush/libweya_nc.so" ]] || { echo "No Hush runtime in $hush; run scripts/build-hush.sh" >&2; exit 1; }
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 work="$(mktemp -d)"
@@ -30,6 +33,12 @@ lic="$payload/usr/share/licenses/otozane"
 install -Dm644 "$root/LICENSE" "$lic/LICENSE"
 install -Dm644 "$root/THIRD_PARTY.md" "$lic/THIRD_PARTY.md"
 [[ -z "${RNNOISE_LICENSE:-}" ]] || install -Dm644 "$RNNOISE_LICENSE" "$lic/RNNoise-COPYING"
+# Hush runtime, found next to the binaries as ../lib/otozane/hush.
+install -Dm755 "$hush/libweya_nc.so" "$payload/usr/lib/otozane/hush/libweya_nc.so"
+install -Dm644 "$hush/advanced_dfnet16k_model_best_onnx.tar.gz" \
+  "$payload/usr/lib/otozane/hush/advanced_dfnet16k_model_best_onnx.tar.gz"
+hush_lic=(Hush-LICENSE DeepFilterNet-LICENSE-MIT DeepFilterNet-LICENSE-APACHE Hush-crates.txt)
+for f in "${hush_lic[@]}"; do install -Dm644 "$hush/$f" "$lic/$f"; done
 desktop-file-validate "$payload/usr/share/applications/otozane.desktop"
 
 # Tarball: the payload plus the installer that copies it into a prefix.
@@ -46,10 +55,11 @@ if command -v dpkg-deb >/dev/null; then
   mkdir -p "$deb/DEBIAN" "$work/debian"
   # Debian keeps licence text in /usr/share/doc/<package>/copyright.
   cat "$lic/LICENSE" "$lic/THIRD_PARTY.md" ${RNNOISE_LICENSE:+"$lic/RNNoise-COPYING"} \
-    > "$deb/usr/share/doc/otozane/copyright"
+    "${hush_lic[@]/#/$lic/}" > "$deb/usr/share/doc/otozane/copyright"
   rm -rf "$deb/usr/share/licenses"
   printf 'Source: otozane\n\nPackage: otozane\nArchitecture: any\n' > "$work/debian/control"
-  shlibs="$(cd "$work" && dpkg-shlibdeps -O "$deb/usr/bin/otozane" "$deb/usr/bin/otozaned")"
+  shlibs="$(cd "$work" && dpkg-shlibdeps -O "$deb/usr/bin/otozane" "$deb/usr/bin/otozaned" \
+    "$deb/usr/lib/otozane/hush/libweya_nc.so")"
   shlibs="${shlibs#shlibs:Depends=}"
   cat > "$deb/DEBIAN/control" <<EOF
 Package: otozane

@@ -42,6 +42,10 @@ struct Slot {
     values: Vec<f32>,
     /// Current wet amount, ramped towards 0 or 1.
     mix: f32,
+    /// Frames to keep the output dry after resuming from a full bypass, so
+    /// the fade-in starts once the processor's latency holds fresh audio.
+    warmup: usize,
+    latency: usize,
     dry: [Vec<f32>; MAX_CHANNELS],
     dry_delay: [crate::dsp::Delay; MAX_CHANNELS],
 }
@@ -55,6 +59,8 @@ impl Slot {
             shared,
             processor,
             mix: if enabled { 1.0 } else { 0.0 },
+            warmup: 0,
+            latency,
             dry: std::array::from_fn(|_| vec![0.0; MAX_BLOCK]),
             dry_delay: std::array::from_fn(|_| crate::dsp::Delay::new(latency)),
         }
@@ -77,6 +83,7 @@ impl Slot {
                 self.dry_delay[c].process(ch);
             }
             self.shared.meter.store(0.0);
+            self.warmup = self.latency;
             return;
         }
         let crossfade = self.mix != 1.0 || target != 1.0;
@@ -101,6 +108,10 @@ impl Slot {
             for (c, ch) in channels.iter_mut().enumerate() {
                 let d = self.dry[c][i];
                 ch[i] = d + (ch[i] - d) * m;
+            }
+            if self.warmup > 0 && target > m {
+                self.warmup -= 1;
+                continue;
             }
             self.mix = if step > 0.0 {
                 (m + step).min(target)
@@ -324,9 +335,17 @@ impl Controller {
                     } else {
                         let params: Vec<ParamDesc> =
                             cfg.kind.params().iter().map(ParamDesc::from).collect();
-                        let p = cfg.kind.create(self.sample_rate, self.channels, MAX_BLOCK);
                         let defaults = params.iter().map(|d| d.default).collect();
-                        (p, params, defaults, None)
+                        match cfg.kind.create(self.sample_rate, self.channels, MAX_BLOCK) {
+                            Ok(p) => (p, params, defaults, None),
+                            // Keep the parameters so the profile still round-trips.
+                            Err(e) => (
+                                Box::new(crate::effects::Passthrough) as Box<dyn Processor>,
+                                params,
+                                defaults,
+                                Some(e),
+                            ),
+                        }
                     };
                     let values = values_for(cfg, &params, &fallback);
                     let shared = Arc::new(SlotShared {
@@ -521,6 +540,38 @@ mod tests {
         // Back on: it runs again.
         slot.process(&mut [&mut buf], true);
         assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn resumed_slot_stays_dry_for_its_latency() {
+        // Outputs 1.0 with 100 frames of latency.
+        struct Late;
+        impl Processor for Late {
+            fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
+                ch[0].fill(1.0);
+            }
+            fn latency(&self) -> usize {
+                100
+            }
+        }
+        let shared = Arc::new(SlotShared {
+            id: 1,
+            kind: EffectKind::Gain,
+            enabled: AtomicBool::new(false),
+            params: Box::new([]),
+            meter: AtomicF32::default(),
+        });
+        let mut slot = Slot::new(shared.clone(), Box::new(Late));
+        let mut buf = [0.5f32; 512];
+        slot.process(&mut [&mut buf], true);
+        shared.enabled.store(true, Ordering::Relaxed);
+        let mut buf = [0.5f32; 1024];
+        slot.process(&mut [&mut buf], true);
+        // Dry during the warm-up (stale processor output is never heard).
+        assert!(buf[..100].iter().all(|&s| s == 0.5));
+        // Then the fade-in, fully wet 480 frames later.
+        assert!(buf[101] > 0.5 && buf[101] < 0.51);
+        assert_eq!(buf[100 + 480], 1.0);
     }
 
     #[test]

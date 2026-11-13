@@ -2057,6 +2057,7 @@ dependencies = [
 name = "otozane-core"
 version = "0.2.0"
 dependencies = [
+ "libloading",
  "rtrb",
  "serde",
  "serde_json",

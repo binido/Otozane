@@ -208,4 +208,16 @@ mod tests {
         assert!(e.enabled);
         assert_eq!(e.values(), vec![0.0]);
     }
+
+    #[test]
+    fn hush_profile_entry_roundtrips() {
+        let mut e = EffectConfig::new(7, EffectKind::Hush);
+        e.enabled = false;
+        e.params.insert("mix".into(), 40.0);
+        let p = Profile { chain: vec![e] };
+        let s = toml::to_string(&p).unwrap();
+        assert!(s.contains("kind = \"hush\""), "{s}");
+        assert_eq!(toml::from_str::<Profile>(&s).unwrap(), p);
+        assert_eq!(p.chain[0].values(), vec![100.0, 40.0]);
+    }
 }
