@@ -59,12 +59,13 @@ Scope:
 | Virtual device | `Otozane Microphone` is owned by the service and removed when the service stops. |
 | Input | Microphone selection. **Automatic** follows the system default microphone. A device that is unplugged and plugged back in is picked up again. |
 | Built-in effects | RNNoise noise suppression with optional voice-activity gate, gain, noise gate, five-band parametric EQ, compressor, lookahead limiter. |
-| Effect chain | Reorderable. Parameters apply live. Bypass is click-free. |
+| Effect chain | Reorderable. Parameters apply live. Bypass is click-free and a bypassed effect uses no CPU. |
+| Modes | **On**, **No effects** (microphone passes through unchanged), **Muted** (capture stops, `Otozane Microphone` outputs silence, almost no CPU). Muted is not remembered: the service always starts unmuted. |
 | Voice preset | Gain, RNNoise with voice detection, gate, compressor, limiter. Default for new setups; **Profiles → Presets** creates it as a new profile. |
 | Profiles | Create, rename, delete, switch, export to and import from `.toml`. The active profile is saved automatically. |
 | VST3 plugins | Linux builds, for example `lsp-plugins-vst3`. Plugin browser with search, parameters, state stored in profiles. |
 | Desktop app | egui. Light, dark and system themes, level meters, diagnostics. |
-| Tray | StatusNotifierItem. Shows the service state, shows or hides the window, quits the app. Requires a tray host such as Waybar, KDE or Noctalia. |
+| Tray | StatusNotifierItem. Shows the service state, switches the mode, shows or hides the window, quits the app. Requires a tray host such as Waybar, KDE or Noctalia. |
 
 Limitations:
 

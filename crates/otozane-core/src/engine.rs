@@ -70,6 +70,15 @@ impl Slot {
             *v = p.load();
         }
         let n = channels[0].len();
+        // Fully bypassed: skip the processor to save CPU. Its state goes stale;
+        // the fade-in on re-enable covers the warm-up.
+        if self.mix == 0.0 && target == 0.0 {
+            for (c, ch) in channels.iter_mut().enumerate() {
+                self.dry_delay[c].process(ch);
+            }
+            self.shared.meter.store(0.0);
+            return;
+        }
         let crossfade = self.mix != 1.0 || target != 1.0;
         if crossfade {
             // The dry path is delayed by the processor latency so toggling an
@@ -80,7 +89,7 @@ impl Slot {
                 self.dry_delay[c].process(dry);
             }
         }
-        // The processor always runs so its internal state stays current.
+        // The processor also runs while fading so the crossfade has a wet side.
         self.processor.process(channels, &self.values);
         self.shared.meter.store(self.processor.meter());
         if !crossfade {
@@ -478,6 +487,40 @@ mod tests {
             Err(ControlError::UnknownEffect(9))
         );
         assert!(ctl.set_param(1, "nope", 0.0).is_err());
+    }
+
+    #[test]
+    fn bypassed_slot_skips_processor() {
+        use std::sync::atomic::AtomicUsize;
+        struct Count(Arc<AtomicUsize>);
+        impl Processor for Count {
+            fn process(&mut self, _: &mut [&mut [f32]], _: &[f32]) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let shared = Arc::new(SlotShared {
+            id: 1,
+            kind: EffectKind::Gain,
+            enabled: AtomicBool::new(true),
+            params: Box::new([]),
+            meter: AtomicF32::default(),
+        });
+        let mut slot = Slot::new(shared.clone(), Box::new(Count(calls.clone())));
+        let mut buf = [0.5f32; 512];
+        slot.process(&mut [&mut buf], true);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        // Master off: one block fades out (480 frames), then the processor stops.
+        slot.process(&mut [&mut buf], false);
+        slot.process(&mut [&mut buf], false);
+        slot.process(&mut [&mut buf], false);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(buf, [0.5; 512]);
+
+        // Back on: it runs again.
+        slot.process(&mut [&mut buf], true);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 
     #[test]

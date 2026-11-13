@@ -52,6 +52,8 @@ fn output_node_name() -> &'static str {
     &NAMES[3]
 }
 const OUTPUT_CHANNELS: usize = 2;
+/// Fade-in applied when a capture stream starts (20 ms).
+const FADE_IN_FRAMES: usize = 960;
 /// Output ring capacity (0.5 s). Excess is discarded, so this bounds memory, not latency.
 const RING_FRAMES: usize = 24_000;
 
@@ -71,6 +73,8 @@ pub enum CaptureState {
     WaitingForDevice(Option<String>),
     Connecting(String),
     Running(String),
+    /// Capture stopped on request; the virtual microphone outputs silence.
+    Muted,
     Error(String),
 }
 
@@ -102,6 +106,7 @@ pub struct Counters {
 
 enum Command {
     SetInput(Option<String>),
+    SetMuted(bool),
     Quit,
 }
 
@@ -145,10 +150,11 @@ impl Backend {
             .spawn(move || {
                 pw::init();
                 let mut input = input;
+                let mut muted = false;
                 loop {
                     let (sender, rx) = pw::channel::channel();
                     *tx2.lock().unwrap() = Some(sender);
-                    match run(&shared, rx, &mut input) {
+                    match run(&shared, rx, &mut input, &mut muted) {
                         Ok(true) => return,
                         Ok(false) => {}
                         Err(e) => shared.set_capture(CaptureState::Error(e.to_string())),
@@ -170,6 +176,12 @@ impl Backend {
     /// Switches the captured microphone. Takes effect asynchronously.
     pub fn set_input(&self, input: Option<String>) {
         self.send(Command::SetInput(input));
+    }
+
+    /// Stops or resumes capture. While muted the virtual microphone stays
+    /// present and outputs silence. Takes effect asynchronously.
+    pub fn set_muted(&self, muted: bool) {
+        self.send(Command::SetMuted(muted));
     }
 
     fn send(&self, cmd: Command) {
@@ -213,6 +225,7 @@ struct Main {
     core: pw::core::CoreRc,
     shared: Shared,
     desired: Option<String>,
+    muted: bool,
     devices: Vec<(u32, Device)>,
     /// System default source (`default.audio.source` metadata), if known.
     default_source: Option<String>,
@@ -304,6 +317,11 @@ impl Main {
 
     /// Makes the capture stream match the desired device and current device list.
     fn reconcile(&mut self) {
+        if self.muted {
+            self.capture = None;
+            self.shared.set_capture(CaptureState::Muted);
+            return;
+        }
         let target = match &self.desired {
             Some(name) => self
                 .devices
@@ -352,6 +370,7 @@ fn run(
     shared: &Shared,
     rx: pw::channel::Receiver<Command>,
     input: &mut Option<String>,
+    muted: &mut bool,
 ) -> Result<bool, pw::Error> {
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(
@@ -378,6 +397,7 @@ fn run(
         core: core.clone(),
         shared: shared.clone(),
         desired: input.clone(),
+        muted: *muted,
         devices: Vec::new(),
         default_source: None,
         last_physical_default: None,
@@ -503,6 +523,11 @@ fn run(
             st.desired = name;
             st.reconcile();
         }
+        Command::SetMuted(m) => {
+            let mut st = s3.borrow_mut();
+            st.muted = m;
+            st.reconcile();
+        }
         Command::Quit => {
             q.set(true);
             ml.quit();
@@ -530,6 +555,7 @@ fn run(
 
     let mut st = state.borrow_mut();
     *input = st.desired.clone();
+    *muted = st.muted;
     st.capture = None;
     Ok(quit.get())
 }
@@ -610,6 +636,9 @@ fn create_capture(
         shared.clone(),
         target.to_string(),
     );
+    // Frames faded in so far: a new stream (unmute, device switch) starts
+    // from silence instead of a click.
+    let mut faded = 0usize;
     let listener = stream
         .add_local_listener::<()>()
         .state_changed(move |_, _, _, new| match new {
@@ -635,6 +664,13 @@ fn create_capture(
             let Ok(mut rt) = rt.try_lock() else { return };
             rt.engine.process_interleaved(samples);
             counters.capture_cycles.fetch_add(1, Ordering::Relaxed);
+            if faded < FADE_IN_FRAMES {
+                for frame in samples.chunks_exact_mut(channels) {
+                    let g = (faded as f32 / FADE_IN_FRAMES as f32).min(1.0);
+                    frame.iter_mut().for_each(|s| *s *= g);
+                    faded += 1;
+                }
+            }
 
             let room = rt.out.slots() / OUTPUT_CHANNELS;
             let n = frames.min(room);

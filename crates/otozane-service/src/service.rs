@@ -22,6 +22,8 @@ pub struct Service {
     plugins: HashMap<u64, Box<dyn PluginControl>>,
     scan: Arc<Mutex<PluginList>>,
     dirty_settings: bool,
+    /// Capture stopped on request. Not saved: a restart always unmutes.
+    muted: bool,
     dirty_profile: bool,
     pub quit: bool,
 }
@@ -47,6 +49,7 @@ impl Service {
             plugins: HashMap::new(),
             scan: Arc::new(Mutex::new(scan)),
             dirty_settings: false,
+            muted: false,
             dirty_profile: false,
             quit: false,
         }
@@ -180,6 +183,11 @@ impl Service {
                     .store(enabled, Ordering::Relaxed);
                 self.settings.processing_enabled = enabled;
                 self.dirty_settings = true;
+                Response::Ok
+            }
+            Request::SetMuted { muted } => {
+                self.backend.set_muted(muted);
+                self.muted = muted;
                 Response::Ok
             }
             Request::SetChain { chain } => match self.apply_chain(chain) {
@@ -353,6 +361,7 @@ impl Service {
             CaptureState::WaitingForDevice(d) => protocol::CaptureState::WaitingForDevice(d),
             CaptureState::Connecting(d) => protocol::CaptureState::Connecting(d),
             CaptureState::Running(d) => protocol::CaptureState::Running(d),
+            CaptureState::Muted => protocol::CaptureState::Muted,
             CaptureState::Error(e) => protocol::CaptureState::Error(e),
         };
         protocol::Status {
@@ -370,6 +379,7 @@ impl Service {
                 .collect(),
             virtual_source_ready: st.virtual_source_ready,
             processing_enabled: shared.processing_enabled.load(Ordering::Relaxed),
+            muted: self.muted,
             input_peak: shared.input_peak.swap(0.0),
             output_peak: shared.output_peak.swap(0.0),
             meters: self.chain.iter().map(|e| self.ctl.meter(e.id)).collect(),

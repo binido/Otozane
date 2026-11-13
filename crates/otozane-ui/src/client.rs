@@ -9,6 +9,50 @@ use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(33);
 
+/// Master processing mode, shown as one three-way choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    On,
+    /// Effects bypassed, microphone passes through unchanged.
+    NoEffects,
+    /// Capture stopped, the virtual microphone outputs silence.
+    Muted,
+}
+
+impl Mode {
+    pub const ALL: [(Mode, &str); 3] = [
+        (Mode::On, "On"),
+        (Mode::NoEffects, "No effects"),
+        (Mode::Muted, "Muted"),
+    ];
+
+    pub fn of(st: &Status) -> Self {
+        match (st.muted, st.processing_enabled) {
+            (true, _) => Mode::Muted,
+            (false, false) => Mode::NoEffects,
+            (false, true) => Mode::On,
+        }
+    }
+
+    /// Requests that switch the service from `from` to this mode. Muted
+    /// keeps the effects setting as it was. `SetMuted` is only sent when
+    /// muting or unmuting, so On and No effects also work with older services.
+    pub fn requests(self, from: Mode) -> Vec<Request> {
+        let mut reqs = Vec::new();
+        if self != Mode::Muted {
+            reqs.push(Request::SetProcessing {
+                enabled: self == Mode::On,
+            });
+        }
+        if (self == Mode::Muted) != (from == Mode::Muted) {
+            reqs.push(Request::SetMuted {
+                muted: self == Mode::Muted,
+            });
+        }
+        reqs
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Connection {
     Connecting,
@@ -324,6 +368,18 @@ pub fn start_service() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mode_sends_set_muted_only_on_mute_change() {
+        use super::Mode::*;
+        use otozane_core::protocol::Request::*;
+        assert_eq!(NoEffects.requests(On), [SetProcessing { enabled: false }]);
+        assert_eq!(Muted.requests(On), [SetMuted { muted: true }]);
+        assert_eq!(
+            On.requests(Muted),
+            [SetProcessing { enabled: true }, SetMuted { muted: false }]
+        );
+    }
+
     #[test]
     fn unit_points_at_local_service() {
         let text = super::unit_text(Some(std::path::Path::new("/opt/my dir/50%/otozaned")));
