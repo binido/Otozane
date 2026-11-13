@@ -5,14 +5,16 @@
 ```
 otozane-core       platform-independent: engine, effects, config, IPC protocol
 otozane-pipewire   Linux backend (depends on core)
-otozane-service    otozaned binary (core + pipewire)
+otozane-coreaudio  macOS backend (depends on core)
+otozane-service    otozaned binary (core + the backend for the target OS)
 otozane-plugins    third-party plugin hosting (VST3)
 otozane-ui         otozane binary (core only; talks to the service over IPC)
 ```
 
 `otozane-core` has no Linux- or GUI-specific code apart from the Unix-socket
-client helper, so a future Core Audio backend only needs a new backend crate
-that drives `engine::Engine` from its audio callback.
+client helper. Both backends share its `backend` module: device and status
+types, the "Automatic" input rule and the stereo ring helpers. Each backend
+crate compiles to nothing on the other OS.
 
 ## Audio path (Linux)
 
@@ -55,6 +57,34 @@ that drives `engine::Engine` from its audio callback.
   disappears the capture stream is destroyed; it is recreated when a node with
   the same `node.name` appears again.
 - If the PipeWire connection is lost, the backend thread reconnects every second.
+
+## Audio path (macOS)
+
+```
+ microphone ──► cpal input stream ──► resample to 48 kHz ──► Engine::process ──► SPSC ring ──► cpal output stream ──► BlackHole 2ch ──► apps
+                (device rate)                                                                    (48 kHz, stereo)
+```
+
+- **No own virtual device.** BlackHole 2ch (UID `BlackHole2ch_UID`) is the
+  output, found by UID. When it is missing nothing is captured and the status
+  says how to install it. BlackHole is never listed as an input.
+- **Devices are polled once a second** through `cpal`, ids are Core Audio
+  device UIDs. A stream whose error callback fired (device unplugged) is
+  dropped and recreated when the device is back. Transport type (virtual,
+  aggregate) is read from Core Audio directly, "Automatic" skips those.
+- **Capture** opens the device at its default rate and channel count, takes the
+  first one or two channels and resamples to 48 kHz with a linear interpolator
+  in the input callback, in steps of 1024 input frames into a preallocated buffer.
+- **Monitor** plays the monitor ring to the system default output at that
+  device's rate, resampled the same way, with the same stale-audio rule. It is
+  recreated when the default output changes and skipped while the default
+  output is BlackHole.
+- **Microphone permission.** `Otozane.app` declares `NSMicrophoneUsageDescription`.
+  `otozaned` embeds its own Info.plist (`__TEXT,__info_plist`, see
+  `crates/otozane-service/build.rs`) for when launchd starts it, macOS then
+  attributes access to the app bundle.
+- **Login start** is a launchd agent in `~/Library/LaunchAgents`, restarted
+  by launchd after a crash but not after a clean exit.
 
 ## Real-time model
 

@@ -3,6 +3,17 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
+## Unreleased
+
+### New
+
+- **macOS version** (macOS 26+, Apple Silicon), shipped as a `.dmg` with
+  `Otozane.app`. The processed microphone goes to
+  [BlackHole 2ch](https://existential.audio/blackhole/), which apps select as
+  their microphone. All built-in effects except Hush, profiles, modes and
+  **Listen to myself** work as on Linux. **Start with session** installs a
+  launchd agent. No tray icon, Hush or VST3 plugins on macOS yet.
+
 ## 0.3.0 - 2026-11-13
 
 ### New

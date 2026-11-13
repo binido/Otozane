@@ -5,16 +5,16 @@
 <h1 align="center">Otozane</h1>
 
 <p align="center">
-  <b>Real-time microphone processor for Linux.</b><br>
-  Captures a microphone through PipeWire, runs it through an effect chain<br>
+  <b>Real-time microphone processor for Linux and macOS.</b><br>
+  Captures a microphone through PipeWire or Core Audio, runs it through an effect chain<br>
   and publishes the result as a virtual input device.
 </p>
 
 <p align="center">
   <a href="https://github.com/binido/Otozane/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/binido/Otozane?style=flat-square&color=1c1c1c"></a>
   <a href="https://github.com/binido/Otozane/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/binido/Otozane/release.yml?style=flat-square&label=build"></a>
-  <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-1c1c1c?style=flat-square">
-  <img alt="Audio: PipeWire" src="https://img.shields.io/badge/audio-PipeWire-1c1c1c?style=flat-square">
+  <img alt="Platform: Linux | macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-1c1c1c?style=flat-square">
+  <img alt="Audio: PipeWire | Core Audio" src="https://img.shields.io/badge/audio-PipeWire%20%7C%20Core%20Audio-1c1c1c?style=flat-square">
   <img alt="Language: Rust" src="https://img.shields.io/badge/language-Rust-1c1c1c?style=flat-square">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/binido/Otozane?style=flat-square&color=1c1c1c"></a>
 </p>
@@ -43,7 +43,9 @@ Physical microphone → effect chain → Otozane Microphone → applications
 
 Otozane creates a virtual input device named **Otozane Microphone**. Discord,
 OBS, browsers and any other application that records from PipeWire can select it
-as a regular microphone.
+as a regular microphone. On macOS the processed audio goes to
+[BlackHole 2ch](https://existential.audio/blackhole/), and applications select
+**BlackHole 2ch** instead, see [macOS](#macos).
 
 Scope:
 
@@ -160,6 +162,38 @@ Any distribution, from the unpacked tarball:
 
 </details>
 
+### macOS
+
+macOS 26 or later, Apple Silicon.
+
+1. Install BlackHole 2ch, the virtual device that applications record from:
+
+   ```sh
+   brew install blackhole-2ch
+   ```
+
+2. Download `otozane-v<version>-macos-arm64.dmg` from the
+   [release page](https://github.com/binido/Otozane/releases/latest) and drag
+   **Otozane** into **Applications**.
+3. The app is not notarized. On first launch, right-click it in Finder and
+   choose **Open**, or allow it in **System Settings → Privacy & Security**.
+4. Allow microphone access when macOS asks.
+5. Select **BlackHole 2ch** as the input device in the application you record with.
+
+Differences from Linux:
+
+- The output is BlackHole 2ch, not a device owned by Otozane. Everything any
+  application plays into BlackHole is mixed with the processed microphone, so
+  route other audio (for example Audio Hijack or a Multi-Output Device) elsewhere.
+- **Automatic** skips virtual devices, including BlackHole, even when one is the
+  system default input.
+- Devices running at other rates (Bluetooth headsets at 16 kHz, outputs at
+  44.1 kHz) are resampled to and from 48 kHz.
+- **Settings → Start with session** installs a launchd agent,
+  `~/Library/LaunchAgents/io.github.binido.otozane.plist`, pointing at the
+  service inside `Otozane.app`. After moving the app, turn the option off and on again.
+- Not available: tray icon, Hush Noise Suppression, VST3 plugins.
+
 ### Start with the session
 
 Both options are off by default.
@@ -212,12 +246,21 @@ install -Dm644 packaging/otozane.desktop ~/.local/share/applications/otozane.des
 
 The desktop entry runs `otozane` from `PATH`.
 
+On macOS (Rust and Xcode command line tools, BlackHole 2ch installed):
+
+```sh
+scripts/build-rnnoise.sh          # once: static RNNoise into third_party/rnnoise
+cargo build --release
+scripts/package-macos.sh 0.3.0 dist   # optional: Otozane.app in a .dmg
+```
+
 Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
 when a `vX.Y.Z` tag matching the version in `Cargo.toml` is pushed.
 
 ## Configuration
 
 Location: `$XDG_CONFIG_HOME/otozane/` (usually `~/.config/otozane/`).
+On macOS: `~/Library/Application Support/Otozane/`, or `$XDG_CONFIG_HOME/otozane/` when it is set.
 
 | File | Contents |
 |---|---|

@@ -8,6 +8,7 @@ Status legend: [x] done, [~] partial, [ ] not started.
 |-------|------|
 | `otozane-core` | Platform-independent DSP engine, built-in effects, RNNoise and Hush FFI, chain, config/profile model, IPC protocol types |
 | `otozane-pipewire` | Linux backend: device discovery, capture stream, `Otozane Microphone` virtual source |
+| `otozane-coreaudio` | macOS backend: device polling, capture through `cpal`, output into BlackHole 2ch, resampling |
 | `otozane-service` | `otozaned` background service: owns the engine and backend, persists config, serves IPC over a Unix socket |
 | `otozane-ui` | `otozane` egui desktop app, talks to the service over IPC |
 | `otozane-plugins` | Third-party plugin hosting (VST3), subprocess scanning |
@@ -22,7 +23,7 @@ Status legend: [x] done, [~] partial, [ ] not started.
 5. [~] Plugin hosting. Done: VST3 (scan in a separate process per bundle, load, process, parameters, state in profiles, bypass, latency, load errors shown on the effect card, plugin browser). Verified with LSP plugins (`tests/lsp.rs`, and `scripts/e2e.sh` with LSP Limiter). Open: JSFX via ysfx (source in `third_party/ysfx`, not built yet); latency changes reported by a plugin at runtime are ignored until it is re-added; plugin editor windows.
 6. [~] Service hardening: done: IPC, single instance, systemd user unit with a "Start with session" switch in the UI (verified: enable, start, restart after kill -9), device unplug/replug recovery, PipeWire reconnect loop, diagnostics, coexistence with a running EasyEffects. Open: verify behavior across suspend/resume and PipeWire restarts on a real session.
 7. [x] Tray and login: StatusNotifierItem tray via `ksni` (service state, show/hide, quit). Closing the window hides it; reopening reuses the eframe event loop. Optional XDG autostart entry (`--hidden`, tray only) behind a Settings switch. Verified on niri with Noctalia by driving the tray over D-Bus (show, hide, repeated show, quit). Not verified: an actual logout/login with the entry.
-8. [ ] Expansion: CLAP, plugin editors, packaging (PKGBUILD), macOS backend.
+8. [~] Expansion. Done: packaging (PKGBUILD, deb, rpm), macOS backend (Core Audio through `cpal`, BlackHole 2ch as the virtual microphone, launchd agent, `.dmg`, verified with `scripts/e2e-macos.sh` and under launchd). Open: CLAP, plugin editors; on macOS a tray icon, Hush (`libweya_nc.dylib`), VST3 (`Contents/MacOS` bundles), an own virtual device instead of BlackHole, notarization.
 
 ## Next steps
 
