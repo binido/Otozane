@@ -40,6 +40,12 @@ that drives `engine::Engine` from its audio callback.
   ring buffer decouples them. The playback side discards stale audio beyond
   one capture quantum, so latency stays bounded after idle periods or clock
   drift. There is no resampling; drift is corrected by dropping frames.
+- **Monitor stream** (`Otozane Monitor`) exists only while "Listen to myself"
+  is on. The capture callback copies its processed output into a second ring,
+  which this autoconnected playback stream drains with the same stale-audio
+  rule; WirePlumber routes it to the default output and follows changes. The
+  capture side writes to that ring only while the stream exists. Not saved:
+  the service always starts with monitoring off.
 - "Automatic" input follows the system default source (the `default`
   metadata's `default.audio.source`), switching live when it changes. A virtual
   default (our own microphone, EasyEffects' output) is skipped: the last
