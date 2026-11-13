@@ -335,9 +335,17 @@ impl Controller {
                     } else {
                         let params: Vec<ParamDesc> =
                             cfg.kind.params().iter().map(ParamDesc::from).collect();
-                        let p = cfg.kind.create(self.sample_rate, self.channels, MAX_BLOCK);
                         let defaults = params.iter().map(|d| d.default).collect();
-                        (p, params, defaults, None)
+                        match cfg.kind.create(self.sample_rate, self.channels, MAX_BLOCK) {
+                            Ok(p) => (p, params, defaults, None),
+                            // Keep the parameters so the profile still round-trips.
+                            Err(e) => (
+                                Box::new(crate::effects::Passthrough) as Box<dyn Processor>,
+                                params,
+                                defaults,
+                                Some(e),
+                            ),
+                        }
                     };
                     let values = values_for(cfg, &params, &fallback);
                     let shared = Arc::new(SlotShared {
