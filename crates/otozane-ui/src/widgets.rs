@@ -316,10 +316,11 @@ const METER_VALUE: f32 = 78.0;
 const METER_SEGMENTS: usize = 48;
 
 /// Segmented LED meters sharing one dB scale. Levels are smoothed linear peaks.
-pub fn meters(ui: &mut Ui, rows: &[(&str, f32)]) {
+/// Level meters: rows of (label, level, peak hold), all linear.
+pub fn meters(ui: &mut Ui, rows: &[(&str, f32, f32)]) {
     let p = theme::current(ui.ctx());
     let bar_w = (ui.available_width() - METER_LABEL - METER_VALUE).max(80.0);
-    for &(label, level) in rows {
+    for &(label, level, hold) in rows {
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(METER_LABEL, 20.0),
@@ -343,7 +344,17 @@ pub fn meters(ui: &mut Ui, rows: &[(&str, f32)]) {
                 let fill = if k < lit { color } else { p.meter_track };
                 ui.painter().rect_filled(r, 2.0, fill);
             }
-            let db = 20.0 * level.max(1e-6).log10();
+            // Peak hold: one segment, solid even when above the live level.
+            let k = (meter_pos(hold) * METER_SEGMENTS as f32).round() as usize;
+            if k > 0 {
+                let x = rect.left() + (k - 1) as f32 * (seg_w + gap);
+                let r =
+                    egui::Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(seg_w, 14.0));
+                let clip = k as f32 / METER_SEGMENTS as f32 * 60.0 - 60.0 > -3.0;
+                ui.painter()
+                    .rect_filled(r, 2.0, if clip { p.error } else { p.text });
+            }
+            let db = 20.0 * hold.max(1e-6).log10();
             let text = if db <= -60.0 {
                 "−∞ dB".to_string()
             } else {
