@@ -1,6 +1,8 @@
 # Binary RPM built by scripts/package-linux.sh from a staged payload.
 %global debug_package %{nil}
 %global __os_install_post %{nil}
+# The bundled Hush library is private; do not advertise it as a system library.
+%global __provides_exclude_from ^%{_prefix}/lib/otozane/.*$
 
 Name:           otozane
 Version:        %{oz_version}
@@ -29,6 +31,7 @@ cp -a %{oz_payload}/. %{buildroot}/
 %files
 %{_bindir}/otozane
 %{_bindir}/otozaned
+%{_prefix}/lib/otozane/
 %{_datadir}/applications/otozane.desktop
 %{_datadir}/icons/hicolor/scalable/apps/otozane.svg
 %license %{_datadir}/licenses/otozane/

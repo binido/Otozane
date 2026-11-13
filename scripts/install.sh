@@ -24,6 +24,8 @@ install_files() {
   icons="$prefix/share/icons/hicolor"
   install -Dm755 "$src/usr/bin/otozane" "$prefix/bin/otozane"
   install -Dm755 "$src/usr/bin/otozaned" "$prefix/bin/otozaned"
+  mkdir -p "$prefix/lib/otozane"
+  cp -a "$src/usr/lib/otozane/." "$prefix/lib/otozane/"
   install -Dm644 "$src/usr/share/icons/hicolor/scalable/apps/otozane.svg" "$icons/scalable/apps/otozane.svg"
   # Absolute Exec, so the menu entry works even when the prefix is not in PATH.
   mkdir -p "$apps"
@@ -44,7 +46,7 @@ uninstall_files() {
     "$prefix/share/applications/otozane.desktop" \
     "$prefix/share/icons/hicolor/scalable/apps/otozane.svg" \
     "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/otozane.service"
-  rm -rf "$prefix/share/licenses/otozane" "$prefix/share/doc/otozane"
+  rm -rf "$prefix/share/licenses/otozane" "$prefix/share/doc/otozane" "$prefix/lib/otozane"
   echo "Removed Otozane from $prefix. Settings in ~/.config/otozane are kept."
 }
 
