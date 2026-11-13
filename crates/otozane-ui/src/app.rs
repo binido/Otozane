@@ -182,6 +182,7 @@ impl App {
     fn state(&self, p: &theme::Palette) -> (egui::Color32, &'static str, String) {
         match (&self.connection, &self.status) {
             (Connection::Connected, Some(st)) => match &st.capture {
+                CaptureState::Muted => (p.text_weak, "Muted", "Apps hear silence".to_string()),
                 CaptureState::Running(d) if !st.processing_enabled => {
                     (p.text_weak, "Bypassed", device_label(st, Some(d)))
                 }
@@ -339,7 +340,7 @@ impl App {
                     ui.allocate_exact_size(egui::vec2(52.0, 52.0), egui::Sense::hover());
                 ui.painter()
                     .circle_filled(rect.center(), 26.0, color.gamma_multiply(0.16));
-                let glyph = if st.processing_enabled {
+                let glyph = if st.processing_enabled && !st.muted {
                     icons::MIC
                 } else {
                     icons::MIC_OFF
@@ -364,14 +365,12 @@ impl App {
                     ui.label(RichText::new(sub).weak());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut on = st.processing_enabled;
-                    if widgets::switch(ui, &mut on)
-                        .on_hover_text("When off, the microphone passes through unchanged")
-                        .changed()
-                    {
-                        self.send(Request::SetProcessing { enabled: on });
+                    let mut mode = client::Mode::of(&st);
+                    if widgets::segmented(ui, &mut mode, &client::Mode::ALL) {
+                        for req in mode.requests() {
+                            self.send(req);
+                        }
                     }
-                    ui.label(RichText::new("Effects").weak());
                 });
             });
             ui.add_space(8.0);
@@ -414,7 +413,7 @@ impl App {
             }
         });
         card(ui, |ui| {
-            if !st.processing_enabled {
+            if !st.processing_enabled || st.muted {
                 ui.multiply_opacity(0.45);
             }
             self.chain_strip(ui, &st);

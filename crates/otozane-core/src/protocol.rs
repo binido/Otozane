@@ -16,6 +16,10 @@ pub enum Request {
     SetProcessing {
         enabled: bool,
     },
+    /// Stops capturing; the virtual microphone outputs silence. Not saved.
+    SetMuted {
+        muted: bool,
+    },
     SetChain {
         chain: Vec<EffectConfig>,
     },
@@ -118,6 +122,8 @@ pub enum CaptureState {
     WaitingForDevice(Option<String>),
     Connecting(String),
     Running(String),
+    /// Capture stopped on request ([`Request::SetMuted`]).
+    Muted,
     Error(String),
 }
 
@@ -153,6 +159,8 @@ pub struct Status {
     pub devices: Vec<DeviceInfo>,
     pub virtual_source_ready: bool,
     pub processing_enabled: bool,
+    #[serde(default)]
+    pub muted: bool,
     /// Peak levels (linear) since the previous status request.
     pub input_peak: f32,
     pub output_peak: f32,

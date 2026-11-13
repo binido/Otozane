@@ -1,8 +1,9 @@
 //! System tray icon (StatusNotifierItem): shows or hides the window, shows
-//! the service state and quits.
+//! the service state, switches the processing mode and quits.
 
+use crate::client::Mode;
 use ksni::blocking::{Handle, TrayMethods};
-use ksni::menu::StandardItem;
+use ksni::menu::{RadioGroup, RadioItem, StandardItem};
 use otozane_core::protocol::{CaptureState, Client, Request, Response};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -17,6 +18,8 @@ pub struct Tray {
     /// Context of the open window, `None` while it is hidden.
     pub window: Option<egui::Context>,
     state: &'static str,
+    /// `None` while the service is not reachable.
+    mode: Option<Mode>,
 }
 
 impl Tray {
@@ -68,6 +71,34 @@ impl ksni::Tray for Tray {
             }
             .into(),
             ksni::MenuItem::Separator,
+            RadioGroup {
+                selected: Mode::ALL
+                    .iter()
+                    .position(|(m, _)| Some(*m) == self.mode)
+                    .unwrap_or(usize::MAX),
+                select: Box::new(|this: &mut Self, i| {
+                    let mode = Mode::ALL[i].0;
+                    this.mode = Some(mode);
+                    // Off the menu thread: the socket round trip can block.
+                    std::thread::spawn(move || {
+                        if let Ok(mut c) = Client::connect() {
+                            for req in mode.requests() {
+                                let _ = c.request(&req);
+                            }
+                        }
+                    });
+                }),
+                options: Mode::ALL
+                    .iter()
+                    .map(|(_, label)| RadioItem {
+                        label: (*label).into(),
+                        enabled: self.mode.is_some(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            }
+            .into(),
+            ksni::MenuItem::Separator,
             StandardItem {
                 label: if self.window.is_some() {
                     "Hide window"
@@ -103,6 +134,7 @@ pub fn spawn(tx: Sender<Cmd>, wait: bool) -> Option<Handle<Tray>> {
         tx,
         window: None,
         state: "Connecting",
+        mode: None,
     };
     let handle = match tray.assume_sni_available(wait).spawn() {
         Ok(h) => h,
@@ -115,29 +147,37 @@ pub fn spawn(tx: Sender<Cmd>, wait: bool) -> Option<Handle<Tray>> {
     std::thread::spawn(move || {
         let mut client = None;
         while !h.is_closed() {
-            let state = state(&mut client);
-            h.update(|t| t.state = state);
+            let (state, mode) = state(&mut client);
+            h.update(|t| {
+                t.state = state;
+                t.mode = mode;
+            });
             std::thread::sleep(Duration::from_secs(2));
         }
     });
     Some(handle)
 }
 
-fn state(client: &mut Option<Client>) -> &'static str {
+fn state(client: &mut Option<Client>) -> (&'static str, Option<Mode>) {
     if client.is_none() {
         *client = Client::connect().ok();
     }
     let resp = client.as_mut().map(|c| c.request(&Request::Status));
     match resp {
-        Some(Ok(Response::Status(st))) => match st.capture {
-            CaptureState::Running(_) => "Processing",
-            CaptureState::Error(_) => "Audio error",
-            _ => "Waiting for input",
-        },
-        Some(Ok(_)) => "Connecting",
+        Some(Ok(Response::Status(st))) => {
+            let state = match st.capture {
+                CaptureState::Running(_) if !st.processing_enabled => "Bypassed",
+                CaptureState::Running(_) => "Processing",
+                CaptureState::Muted => "Muted",
+                CaptureState::Error(_) => "Audio error",
+                _ => "Waiting for input",
+            };
+            (state, Some(Mode::of(&st)))
+        }
+        Some(Ok(_)) => ("Connecting", None),
         _ => {
             *client = None;
-            "Service stopped"
+            ("Service stopped", None)
         }
     }
 }

@@ -9,6 +9,46 @@ use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(33);
 
+/// Master processing mode, shown as one three-way choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    On,
+    /// Effects bypassed, microphone passes through unchanged.
+    NoEffects,
+    /// Capture stopped, the virtual microphone outputs silence.
+    Muted,
+}
+
+impl Mode {
+    pub const ALL: [(Mode, &str); 3] = [
+        (Mode::On, "On"),
+        (Mode::NoEffects, "No effects"),
+        (Mode::Muted, "Muted"),
+    ];
+
+    pub fn of(st: &Status) -> Self {
+        match (st.muted, st.processing_enabled) {
+            (true, _) => Mode::Muted,
+            (false, false) => Mode::NoEffects,
+            (false, true) => Mode::On,
+        }
+    }
+
+    /// Requests that switch the service to this mode. Muted keeps the
+    /// effects setting as it was.
+    pub fn requests(self) -> Vec<Request> {
+        match self {
+            Mode::Muted => vec![Request::SetMuted { muted: true }],
+            m => vec![
+                Request::SetProcessing {
+                    enabled: m == Mode::On,
+                },
+                Request::SetMuted { muted: false },
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Connection {
     Connecting,
