@@ -24,6 +24,8 @@ pub struct Service {
     dirty_settings: bool,
     /// Capture stopped on request. Not saved: a restart always unmutes.
     muted: bool,
+    /// Monitor playback on. Not saved, so speakers never start feeding back.
+    monitoring: bool,
     dirty_profile: bool,
     pub quit: bool,
 }
@@ -50,6 +52,7 @@ impl Service {
             scan: Arc::new(Mutex::new(scan)),
             dirty_settings: false,
             muted: false,
+            monitoring: false,
             dirty_profile: false,
             quit: false,
         }
@@ -188,6 +191,11 @@ impl Service {
             Request::SetMuted { muted } => {
                 self.backend.set_muted(muted);
                 self.muted = muted;
+                Response::Ok
+            }
+            Request::SetMonitor { on } => {
+                self.backend.set_monitor(on);
+                self.monitoring = on;
                 Response::Ok
             }
             Request::SetChain { chain } => match self.apply_chain(chain) {
@@ -380,6 +388,7 @@ impl Service {
             virtual_source_ready: st.virtual_source_ready,
             processing_enabled: shared.processing_enabled.load(Ordering::Relaxed),
             muted: self.muted,
+            monitoring: self.monitoring,
             input_peak: shared.input_peak.swap(0.0),
             output_peak: shared.output_peak.swap(0.0),
             meters: self.chain.iter().map(|e| self.ctl.meter(e.id)).collect(),

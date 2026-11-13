@@ -61,6 +61,7 @@ Scope:
 | Built-in effects | RNNoise noise suppression with optional voice-activity gate, Hush noise and background-speaker suppression, gain, noise gate, five-band parametric EQ, compressor, lookahead limiter. |
 | Effect chain | Reorderable. Parameters apply live. Bypass is click-free and a bypassed effect uses no CPU. |
 | Modes | **On**, **No effects** (microphone passes through unchanged), **Muted** (capture stops, `Otozane Microphone` outputs silence, almost no CPU). Muted is not remembered: the service always starts unmuted. |
+| Listen to myself | **Overview → Input** plays the processed microphone, as apps hear it, to the system default output. Appears in the system mixer as `Otozane Monitor` for volume control. Not remembered: the service always starts with it off. Use headphones, speakers feed back into the microphone. |
 | Voice preset | Gain, RNNoise with voice detection, gate, compressor, limiter. Default for new setups; **Profiles → Presets** creates it as a new profile. |
 | Profiles | Create, rename, delete, switch, export to and import from `.toml`. The active profile is saved automatically. |
 | VST3 plugins | Linux builds, for example `lsp-plugins-vst3`. Plugin browser with search, parameters, state stored in profiles. |

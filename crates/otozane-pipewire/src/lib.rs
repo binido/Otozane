@@ -7,6 +7,8 @@
 //! stream that feeds a `support.null-audio-sink` node exposed with
 //! `media.class = Audio/Source/Virtual`, which applications record from.
 //! A lock-free SPSC ring buffer carries processed audio between the streams.
+//! While monitoring is on, a third stream, `Otozane Monitor`, plays the same
+//! processed audio from a second ring to the system default output.
 
 use otozane_core::SAMPLE_RATE;
 use otozane_core::engine::Engine;
@@ -16,7 +18,7 @@ use pw::spa;
 use pw::stream::{StreamFlags, StreamListener, StreamRc, StreamState};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -24,7 +26,7 @@ use std::time::Duration;
 /// `node.name` of the virtual microphone. Never offered as an input.
 /// Node names, prefixed with `$OTOZANE_NODE_PREFIX` when set, so a test
 /// service can run next to a real one without either picking up the other's nodes.
-static NAMES: std::sync::LazyLock<[String; 4]> = std::sync::LazyLock::new(|| {
+static NAMES: std::sync::LazyLock<[String; 5]> = std::sync::LazyLock::new(|| {
     let p = std::env::var("OTOZANE_NODE_PREFIX").unwrap_or_default();
     let desc = if p.is_empty() {
         "Otozane Microphone".to_string()
@@ -36,6 +38,7 @@ static NAMES: std::sync::LazyLock<[String; 4]> = std::sync::LazyLock::new(|| {
         desc,
         format!("{p}otozane_capture"),
         format!("{p}otozane_output"),
+        format!("{p}otozane_monitor"),
     ]
 });
 
@@ -50,6 +53,9 @@ fn capture_node_name() -> &'static str {
 }
 fn output_node_name() -> &'static str {
     &NAMES[3]
+}
+fn monitor_node_name() -> &'static str {
+    &NAMES[4]
 }
 const OUTPUT_CHANNELS: usize = 2;
 /// Fade-in applied when a capture stream starts (20 ms).
@@ -107,6 +113,7 @@ pub struct Counters {
 enum Command {
     SetInput(Option<String>),
     SetMuted(bool),
+    SetMonitor(bool),
     Quit,
 }
 
@@ -116,6 +123,8 @@ enum Command {
 struct RtState {
     engine: Engine,
     out: rtrb::Producer<f32>,
+    /// Feeds the monitor stream; written only while `Shared::monitor_on`.
+    monitor: rtrb::Producer<f32>,
 }
 
 type SharedSender = Arc<Mutex<Option<pw::channel::Sender<Command>>>>;
@@ -135,12 +144,16 @@ impl Backend {
         let counters = Arc::new(Counters::default());
         let tx: SharedSender = Arc::default();
         let (out_tx, out_rx) = rtrb::RingBuffer::new(RING_FRAMES * OUTPUT_CHANNELS);
+        let (mon_tx, mon_rx) = rtrb::RingBuffer::new(RING_FRAMES * OUTPUT_CHANNELS);
         let shared = Shared {
             rt: Arc::new(Mutex::new(RtState {
                 engine,
                 out: out_tx,
+                monitor: mon_tx,
             })),
             out_rx: Arc::new(Mutex::new(out_rx)),
+            monitor_rx: Arc::new(Mutex::new(mon_rx)),
+            monitor_on: Arc::default(),
             status: status.clone(),
             counters: counters.clone(),
         };
@@ -151,10 +164,11 @@ impl Backend {
                 pw::init();
                 let mut input = input;
                 let mut muted = false;
+                let mut monitoring = false;
                 loop {
                     let (sender, rx) = pw::channel::channel();
                     *tx2.lock().unwrap() = Some(sender);
-                    match run(&shared, rx, &mut input, &mut muted) {
+                    match run(&shared, rx, &mut input, &mut muted, &mut monitoring) {
                         Ok(true) => return,
                         Ok(false) => {}
                         Err(e) => shared.set_capture(CaptureState::Error(e.to_string())),
@@ -184,6 +198,12 @@ impl Backend {
         self.send(Command::SetMuted(muted));
     }
 
+    /// Plays the processed microphone to the system default output.
+    /// Takes effect asynchronously.
+    pub fn set_monitor(&self, on: bool) {
+        self.send(Command::SetMonitor(on));
+    }
+
     fn send(&self, cmd: Command) {
         if let Some(tx) = self.tx.lock().unwrap().as_ref() {
             let _ = tx.send(cmd);
@@ -204,6 +224,10 @@ impl Drop for Backend {
 struct Shared {
     rt: Arc<Mutex<RtState>>,
     out_rx: Arc<Mutex<rtrb::Consumer<f32>>>,
+    monitor_rx: Arc<Mutex<rtrb::Consumer<f32>>>,
+    /// Whether the capture callback feeds the monitor ring. Kept off while no
+    /// monitor stream drains it, so the ring never holds stale audio.
+    monitor_on: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
     counters: Arc<Counters>,
 }
@@ -233,6 +257,8 @@ struct Main {
     last_physical_default: Option<String>,
     _metadata: Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
     capture: Option<Capture>,
+    monitoring: bool,
+    monitor: Option<(StreamRc, StreamListener<()>)>,
     /// Global ids of our feed stream node and our virtual microphone node.
     output_node: Option<u32>,
     virtual_node: Option<u32>,
@@ -310,6 +336,24 @@ impl Main {
         }
     }
 
+    /// Creates or drops the monitor stream to match `monitoring`.
+    fn reconcile_monitor(&mut self) {
+        if self.monitoring == self.monitor.is_some() {
+            return;
+        }
+        self.shared.monitor_on.store(false, Ordering::Relaxed);
+        self.monitor = None;
+        if self.monitoring {
+            match create_monitor(&self.core, &self.shared) {
+                Ok(m) => {
+                    self.monitor = Some(m);
+                    self.shared.monitor_on.store(true, Ordering::Relaxed);
+                }
+                Err(e) => eprintln!("failed to create monitor stream: {e}"),
+            }
+        }
+    }
+
     fn publish_devices(&self) {
         self.shared.status.lock().unwrap().devices =
             self.devices.iter().map(|(_, d)| d.clone()).collect();
@@ -371,6 +415,7 @@ fn run(
     rx: pw::channel::Receiver<Command>,
     input: &mut Option<String>,
     muted: &mut bool,
+    monitoring: &mut bool,
 ) -> Result<bool, pw::Error> {
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(
@@ -403,11 +448,14 @@ fn run(
         last_physical_default: None,
         _metadata: None,
         capture: None,
+        monitoring: *monitoring,
+        monitor: None,
         output_node: None,
         virtual_node: None,
         ports: Vec::new(),
         links: Vec::new(),
     }));
+    state.borrow_mut().reconcile_monitor();
 
     let registry = core.get_registry_rc()?;
     let (s1, s2) = (state.clone(), state.clone());
@@ -528,6 +576,11 @@ fn run(
             st.muted = m;
             st.reconcile();
         }
+        Command::SetMonitor(on) => {
+            let mut st = s3.borrow_mut();
+            st.monitoring = on;
+            st.reconcile_monitor();
+        }
         Command::Quit => {
             q.set(true);
             ml.quit();
@@ -556,7 +609,10 @@ fn run(
     let mut st = state.borrow_mut();
     *input = st.desired.clone();
     *muted = st.muted;
+    *monitoring = st.monitoring;
     st.capture = None;
+    st.monitor = None;
+    shared.monitor_on.store(false, Ordering::Relaxed);
     Ok(quit.get())
 }
 
@@ -634,11 +690,12 @@ fn create_capture(
             *pw::keys::NODE_LATENCY => "1024/48000",
         },
     )?;
-    let (rt, counters, st, name) = (
+    let (rt, counters, st, name, monitor_on) = (
         shared.rt.clone(),
         shared.counters.clone(),
         shared.clone(),
         target.to_string(),
+        shared.monitor_on.clone(),
     );
     // Frames faded in so far: a new stream (unmute, device switch) starts
     // from silence instead of a click.
@@ -676,26 +733,15 @@ fn create_capture(
                 }
             }
 
-            let room = rt.out.slots() / OUTPUT_CHANNELS;
-            let n = frames.min(room);
+            let n = push_stereo(&mut rt.out, samples, channels);
             if n < frames {
                 counters
                     .overrun_frames
                     .fetch_add((frames - n) as u64, Ordering::Relaxed);
             }
-            let Ok(mut chunk) = rt.out.write_chunk(n * OUTPUT_CHANNELS) else {
-                return;
-            };
-            let (a, b) = chunk.as_mut_slices();
-            let mut out = a.iter_mut().chain(b.iter_mut());
-            for frame in samples.chunks_exact(channels).take(n) {
-                let (l, r) = (frame[0], frame[channels - 1]);
-                if let (Some(o1), Some(o2)) = (out.next(), out.next()) {
-                    *o1 = l;
-                    *o2 = r;
-                }
+            if monitor_on.load(Ordering::Relaxed) {
+                push_stereo(&mut rt.monitor, samples, channels);
             }
-            chunk.commit_all();
         })
         .register()?;
     let format = format_param(channels);
@@ -711,6 +757,128 @@ fn create_capture(
         _stream: stream,
         _listener: listener,
     })
+}
+
+/// Writes interleaved `samples` to `ring` as stereo (mono is duplicated).
+/// Returns the frames written; the rest are dropped when the ring is full.
+fn push_stereo(ring: &mut rtrb::Producer<f32>, samples: &[f32], channels: usize) -> usize {
+    let n = (samples.len() / channels).min(ring.slots() / OUTPUT_CHANNELS);
+    let Ok(mut chunk) = ring.write_chunk(n * OUTPUT_CHANNELS) else {
+        return 0;
+    };
+    let (a, b) = chunk.as_mut_slices();
+    let mut out = a.iter_mut().chain(b.iter_mut());
+    for frame in samples.chunks_exact(channels).take(n) {
+        let (l, r) = (frame[0], frame[channels - 1]);
+        if let (Some(o1), Some(o2)) = (out.next(), out.next()) {
+            *o1 = l;
+            *o2 = r;
+        }
+    }
+    chunk.commit_all();
+    n
+}
+
+/// Fills `out` with `frames` stereo frames from `ring`, padding with silence.
+/// Queued audio beyond this cycle plus one capture quantum is stale (e.g.
+/// buffered while nobody recorded) and is discarded first.
+/// Returns (frames read, frames skipped, frames left queued).
+fn pull_stereo(
+    ring: &mut rtrb::Consumer<f32>,
+    out: &mut [f32],
+    frames: usize,
+    capture_quantum: usize,
+) -> (usize, usize, usize) {
+    let avail = ring.slots() / OUTPUT_CHANNELS;
+    let keep = frames + capture_quantum;
+    let mut skipped = 0;
+    if avail > keep + 256 {
+        skipped = avail - keep;
+        if let Ok(c) = ring.read_chunk(skipped * OUTPUT_CHANNELS) {
+            c.commit_all();
+        }
+    }
+    let avail = ring.slots() / OUTPUT_CHANNELS;
+    let got = avail.min(frames);
+    if let Ok(chunk) = ring.read_chunk(got * OUTPUT_CHANNELS) {
+        let (a, b) = chunk.as_slices();
+        out[..a.len()].copy_from_slice(a);
+        out[a.len()..a.len() + b.len()].copy_from_slice(b);
+        chunk.commit_all();
+    }
+    out[got * OUTPUT_CHANNELS..frames * OUTPUT_CHANNELS].fill(0.0);
+    (got, skipped, avail - got)
+}
+
+/// Dequeues a playback buffer, lets `fill` write up to the requested number
+/// of stereo frames, and sets the chunk to the frames written.
+fn playback_cycle(stream: &pw::stream::Stream, fill: impl FnOnce(&mut [f32], usize)) {
+    let Some(mut buffer) = stream.dequeue_buffer() else {
+        return;
+    };
+    let requested = buffer.requested() as usize;
+    let Some(data) = buffer.datas_mut().first_mut() else {
+        return;
+    };
+    let Some(out) = samples(data, false) else {
+        return;
+    };
+    let capacity = out.len() / OUTPUT_CHANNELS;
+    let frames = if requested == 0 {
+        capacity.min(1024)
+    } else {
+        requested.min(capacity)
+    };
+    fill(out, frames);
+    if let Some(c) = data_chunk(&mut buffer) {
+        *c.offset_mut() = 0;
+        *c.stride_mut() = (OUTPUT_CHANNELS * 4) as i32;
+        *c.size_mut() = (frames * OUTPUT_CHANNELS * 4) as u32;
+    }
+}
+
+/// Plays the processed microphone to the system default output. Autoconnected,
+/// so WirePlumber routes it and follows default output changes.
+fn create_monitor(
+    core: &pw::core::CoreRc,
+    shared: &Shared,
+) -> Result<(StreamRc, StreamListener<()>), pw::Error> {
+    let stream = StreamRc::new(
+        core.clone(),
+        "otozane-monitor",
+        properties! {
+            *pw::keys::MEDIA_TYPE => "Audio",
+            *pw::keys::MEDIA_CATEGORY => "Playback",
+            *pw::keys::MEDIA_ROLE => "Communication",
+            *pw::keys::NODE_NAME => monitor_node_name(),
+            *pw::keys::NODE_DESCRIPTION => "Otozane Monitor",
+            *pw::keys::MEDIA_NAME => "Otozane Monitor",
+        },
+    )?;
+    let (rx, counters) = (shared.monitor_rx.clone(), shared.counters.clone());
+    let listener = stream
+        .add_local_listener::<()>()
+        .process(move |stream, _| {
+            playback_cycle(stream, |out, frames| {
+                let q = counters.capture_quantum.load(Ordering::Relaxed) as usize;
+                match rx.try_lock() {
+                    Ok(mut rx) => {
+                        pull_stereo(&mut rx, out, frames, q);
+                    }
+                    Err(_) => out[..frames * OUTPUT_CHANNELS].fill(0.0),
+                }
+            });
+        })
+        .register()?;
+    let format = format_param(OUTPUT_CHANNELS);
+    let mut params = [spa::pod::Pod::from_bytes(&format).expect("valid pod")];
+    stream.connect(
+        spa::utils::Direction::Output,
+        None,
+        StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
+        &mut params,
+    )?;
+    Ok((stream, listener))
 }
 
 fn create_playback(
@@ -760,64 +928,28 @@ fn create_playback(
             st.lock().unwrap().virtual_source_ready = ready;
         })
         .process(move |stream, _| {
-            let Some(mut buffer) = stream.dequeue_buffer() else {
-                return;
-            };
-            let requested = buffer.requested() as usize;
-            let Some(data) = buffer.datas_mut().first_mut() else {
-                return;
-            };
-            let Some(out) = samples(data, false) else {
-                return;
-            };
-            let capacity = out.len() / OUTPUT_CHANNELS;
-            let frames = if requested == 0 {
-                capacity.min(1024)
-            } else {
-                requested.min(capacity)
-            };
-            counters
-                .playback_quantum
-                .store(frames as u32, Ordering::Relaxed);
-            let mut got = 0;
-            if let Ok(mut rx) = rx.try_lock() {
-                let avail = rx.slots() / OUTPUT_CHANNELS;
-                // Keep at most one capture quantum queued beyond this cycle;
-                // anything older is stale (e.g. buffered while nobody recorded).
-                let keep = frames + counters.capture_quantum.load(Ordering::Relaxed) as usize;
-                if avail > keep + 256 {
-                    let skip = avail - keep;
-                    if let Ok(c) = rx.read_chunk(skip * OUTPUT_CHANNELS) {
-                        c.commit_all();
-                    }
+            playback_cycle(stream, |out, frames| {
+                counters
+                    .playback_quantum
+                    .store(frames as u32, Ordering::Relaxed);
+                let mut got = 0;
+                if let Ok(mut rx) = rx.try_lock() {
+                    let q = counters.capture_quantum.load(Ordering::Relaxed) as usize;
+                    let (g, skipped, left) = pull_stereo(&mut rx, out, frames, q);
+                    got = g;
                     counters
                         .skipped_frames
-                        .fetch_add(skip as u64, Ordering::Relaxed);
+                        .fetch_add(skipped as u64, Ordering::Relaxed);
+                    counters.ring_fill.store(left as u32, Ordering::Relaxed);
+                } else {
+                    out[..frames * OUTPUT_CHANNELS].fill(0.0);
                 }
-                let avail = rx.slots() / OUTPUT_CHANNELS;
-                got = avail.min(frames);
-                if let Ok(chunk) = rx.read_chunk(got * OUTPUT_CHANNELS) {
-                    let (a, b) = chunk.as_slices();
-                    out[..a.len()].copy_from_slice(a);
-                    out[a.len()..a.len() + b.len()].copy_from_slice(b);
-                    chunk.commit_all();
+                if got < frames {
+                    counters
+                        .underrun_frames
+                        .fetch_add((frames - got) as u64, Ordering::Relaxed);
                 }
-                counters
-                    .ring_fill
-                    .store((avail - got) as u32, Ordering::Relaxed);
-            }
-            out[got * OUTPUT_CHANNELS..frames * OUTPUT_CHANNELS].fill(0.0);
-            if got < frames {
-                counters
-                    .underrun_frames
-                    .fetch_add((frames - got) as u64, Ordering::Relaxed);
-            }
-            let chunk = data_chunk(&mut buffer);
-            if let Some(c) = chunk {
-                *c.offset_mut() = 0;
-                *c.stride_mut() = (OUTPUT_CHANNELS * 4) as i32;
-                *c.size_mut() = (frames * OUTPUT_CHANNELS * 4) as u32;
-            }
+            });
         })
         .register()?;
     let format = format_param(OUTPUT_CHANNELS);
@@ -845,6 +977,22 @@ mod tests {
             description: description.into(),
             is_virtual,
         }
+    }
+
+    #[test]
+    fn ring_carries_stereo_and_drops_stale_audio() {
+        let (mut tx, mut rx) = rtrb::RingBuffer::new(4096 * OUTPUT_CHANNELS);
+        // Mono is duplicated to both channels.
+        assert_eq!(push_stereo(&mut tx, &[0.5, -0.5], 1), 2);
+        let mut out = [9.0; 8];
+        assert_eq!(pull_stereo(&mut rx, &mut out, 4, 0), (2, 0, 0));
+        assert_eq!(out, [0.5, 0.5, -0.5, -0.5, 0.0, 0.0, 0.0, 0.0]);
+        // A backlog beyond this cycle plus one quantum is skipped, newest kept.
+        let block: Vec<f32> = (0..2000).map(|i| i as f32).collect();
+        assert_eq!(push_stereo(&mut tx, &block, 1), 2000);
+        let mut out = vec![0.0; 200];
+        assert_eq!(pull_stereo(&mut rx, &mut out, 100, 100), (100, 1800, 100));
+        assert_eq!(out[0], 1800.0);
     }
 
     #[test]
