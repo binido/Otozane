@@ -365,9 +365,10 @@ impl App {
                     ui.label(RichText::new(sub).weak());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut mode = client::Mode::of(&st);
+                    let from = client::Mode::of(&st);
+                    let mut mode = from;
                     if widgets::segmented(ui, &mut mode, &client::Mode::ALL) {
-                        for req in mode.requests() {
+                        for req in mode.requests(from) {
                             self.send(req);
                         }
                     }

@@ -78,11 +78,12 @@ impl ksni::Tray for Tray {
                     .unwrap_or(usize::MAX),
                 select: Box::new(|this: &mut Self, i| {
                     let mode = Mode::ALL[i].0;
+                    let from = this.mode.unwrap_or(mode);
                     this.mode = Some(mode);
                     // Off the menu thread: the socket round trip can block.
                     std::thread::spawn(move || {
                         if let Ok(mut c) = Client::connect() {
-                            for req in mode.requests() {
+                            for req in mode.requests(from) {
                                 let _ = c.request(&req);
                             }
                         }
