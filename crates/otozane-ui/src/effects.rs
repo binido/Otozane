@@ -22,6 +22,7 @@ pub fn kind_icon(kind: EffectKind) -> &'static str {
     match kind {
         EffectKind::Gain => icons::VOLUME_2,
         EffectKind::Rnnoise => icons::SPARKLES,
+        EffectKind::Hush => icons::AUDIO_LINES,
         EffectKind::Gate => icons::SHIELD_CHECK,
         EffectKind::Equalizer => icons::SLIDERS_HORIZONTAL,
         EffectKind::Compressor => icons::GAUGE,
