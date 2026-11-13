@@ -75,6 +75,8 @@ pub struct App {
     pub chain: Vec<EffectConfig>,
     last_edit: Instant,
     levels: (f32, f32),
+    /// Peak hold per meter: highest recent level and when it was reached.
+    holds: [(f32, Instant); 2],
     last_frame: Instant,
     toasts: Vec<(String, Instant, bool)>,
     /// Effect cards the user collapsed; all others show their parameters.
@@ -113,6 +115,7 @@ impl App {
             chain: Vec::new(),
             last_edit: Instant::now() - Duration::from_secs(10),
             levels: (0.0, 0.0),
+            holds: [(0.0, Instant::now()); 2],
             last_frame: Instant::now(),
             toasts: Vec::new(),
             collapsed: Default::default(),
@@ -162,11 +165,15 @@ impl App {
         if let Some(st) = &status {
             self.levels.0 = st.input_peak.max(self.levels.0 * decay);
             self.levels.1 = st.output_peak.max(self.levels.1 * decay);
+            for (hold, level) in self.holds.iter_mut().zip([self.levels.0, self.levels.1]) {
+                *hold = peak_hold(*hold, level, now, decay);
+            }
             if self.last_edit.elapsed() > Duration::from_millis(500) {
                 self.chain = st.chain.clone();
             }
         } else {
             self.levels = (0.0, 0.0);
+            self.holds = [(0.0, now); 2];
         }
         self.status = status;
     }
@@ -392,7 +399,13 @@ impl App {
         section(ui, "Levels");
         card(ui, |ui| {
             ui.add_space(4.0);
-            widgets::meters(ui, &[("Input", self.levels.0), ("Output", self.levels.1)]);
+            widgets::meters(
+                ui,
+                &[
+                    ("Input", self.levels.0, self.holds[0].0),
+                    ("Output", self.levels.1, self.holds[1].0),
+                ],
+            );
         });
 
         widgets::section_with(ui, "Signal chain", |ui| {
@@ -984,6 +997,18 @@ impl eframe::App for App {
     }
 }
 
+/// Peak hold: jumps to a higher level, stays put for 1.5 s, then falls at
+/// the meter's decay rate.
+fn peak_hold(hold: (f32, Instant), level: f32, now: Instant, decay: f32) -> (f32, Instant) {
+    if level >= hold.0 {
+        (level, now)
+    } else if now - hold.1 > Duration::from_millis(1500) {
+        ((hold.0 * decay).max(level), hold.1)
+    } else {
+        hold
+    }
+}
+
 /// Development aid: with `OTOZANE_SCREENSHOT=<file>`, captures the window as
 /// raw RGBA (`<file>`, size printed to stdout) after one second and exits.
 fn dev_screenshot(ui: &mut Ui) {
@@ -1004,4 +1029,21 @@ fn dev_screenshot(ui: &mut Ui) {
         // Exits rather than closing, which would only hide to the tray.
         std::process::exit(0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peak_hold_holds_then_falls() {
+        let t0 = Instant::now();
+        let h = peak_hold((0.0, t0), 0.5, t0, 0.9);
+        assert_eq!(h.0, 0.5);
+        let h = peak_hold(h, 0.1, t0 + Duration::from_secs(1), 0.9);
+        assert_eq!(h.0, 0.5, "held for 1.5 s");
+        let h = peak_hold(h, 0.1, t0 + Duration::from_secs(2), 0.9);
+        assert!((h.0 - 0.45).abs() < 1e-6, "falls after the hold");
+        assert_eq!(peak_hold(h, 0.8, t0, 0.9).0, 0.8, "jumps to a new peak");
+    }
 }

@@ -133,10 +133,8 @@ fn fonts() -> FontDefinitions {
     };
     f.families
         .insert(FontFamily::Proportional, family("Roboto"));
-    f.families.insert(
-        FontFamily::Name(MEDIUM.into()),
-        family("Roboto-Medium"),
-    );
+    f.families
+        .insert(FontFamily::Name(MEDIUM.into()), family("Roboto-Medium"));
     f.families
         .get_mut(&FontFamily::Monospace)
         .expect("default monospace family")
