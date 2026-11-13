@@ -16,7 +16,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{JoinHandle, Thread};
 
-pub const PARAMS: &[ParamSpec] = &[ParamSpec::new("mix", "Mix", 0.0, 100.0, 100.0, "%")];
+pub const PARAMS: &[ParamSpec] = &[
+    // libweya_nc's atten_lim_db: 100 dB or more means no limit.
+    ParamSpec::new("atten_limit", "Attenuation limit", 0.0, 100.0, 100.0, "dB"),
+    ParamSpec::new("mix", "Mix", 0.0, 100.0, 100.0, "%"),
+];
 
 pub const LIB: &str = "libweya_nc.so";
 pub const MODEL: &str = "advanced_dfnet16k_model_best_onnx.tar.gz";
@@ -258,7 +262,15 @@ impl Hush {
 
 impl Processor for Hush {
     fn process(&mut self, channels: &mut [&mut [f32]], p: &[f32]) {
-        let mix = p[0] / 100.0;
+        // The library limits attenuation by blending the delayed noisy signal
+        // back in (`enh * (1 - lim) + noisy * lim`), which is a dry/wet mix:
+        // done here so it can change without recreating the sessions.
+        let lim = if p[0] >= 100.0 {
+            0.0
+        } else {
+            crate::dsp::db_to_lin(-p[0])
+        };
+        let mix = p[1] / 100.0 * (1.0 - lim);
         let n = channels[0].len();
         for i in 0..n {
             for (ch, st) in channels.iter().zip(self.channels.iter_mut()) {
@@ -538,7 +550,7 @@ mod tests {
             let n = blocks[b % blocks.len()].min(out[0].len() - pos);
             let mut planes: Vec<&mut [f32]> =
                 out.iter_mut().map(|c| &mut c[pos..pos + n]).collect();
-            h.process(&mut planes, &[mix]);
+            h.process(&mut planes, &[100.0, mix]);
             h.settle();
             pos += n;
             b += 1;
@@ -607,6 +619,28 @@ mod tests {
     }
 
     #[test]
+    fn attenuation_limit_keeps_that_much_of_the_dry_signal() {
+        let silence: Denoise = Box::new(|_, _, o| {
+            *o = [0.0; HOP];
+            0.0
+        });
+        let mut h = Hush::with_denoiser(1, MODEL_DELAY, silence).unwrap();
+        let input = noise(20_000, 0.5);
+        let mut out = input.clone();
+        for chunk in out.chunks_mut(480) {
+            // 20 dB limit: a fully suppressed signal stays at 0.1 of the input.
+            h.process(&mut [chunk], &[20.0, 100.0]);
+            h.settle();
+        }
+        for i in LATENCY..input.len() {
+            assert!(
+                (out[i] - 0.1 * input[i - LATENCY]).abs() < 1e-6,
+                "sample {i}"
+            );
+        }
+    }
+
+    #[test]
     fn late_frames_play_dry_without_changing_latency() {
         // A worker that never keeps up: every frame misses its deadline.
         let slow: Denoise = Box::new(|_, i, o| {
@@ -618,7 +652,7 @@ mod tests {
         let input = noise(20_000, 0.5);
         let mut out = input.clone();
         for chunk in out.chunks_mut(1024) {
-            h.process(&mut [chunk], &[100.0]);
+            h.process(&mut [chunk], &[100.0, 100.0]);
         }
         for i in LATENCY..input.len() {
             assert_eq!(out[i], input[i - LATENCY], "sample {i}");
@@ -669,7 +703,7 @@ mod tests {
                 let mut copy: Vec<Vec<f32>> = bufs.iter().map(|c| c[i..i + 480].to_vec()).collect();
                 let mut planes: Vec<&mut [f32]> =
                     copy.iter_mut().map(|c| c.as_mut_slice()).collect();
-                h.process(&mut planes, &[100.0]);
+                h.process(&mut planes, &[100.0, 100.0]);
                 h.settle();
                 worst = worst.max(t.elapsed());
             }
@@ -679,7 +713,7 @@ mod tests {
             for i in (0..bufs[0].len()).step_by(480) {
                 let mut planes: Vec<&mut [f32]> =
                     bufs.iter_mut().map(|c| &mut c[i..i + 480]).collect();
-                h.process(&mut planes, &[100.0]);
+                h.process(&mut planes, &[100.0, 100.0]);
             }
             let rt = start.elapsed();
             eprintln!(
@@ -688,6 +722,20 @@ mod tests {
                 rt.as_secs_f64() / seconds as f64 * 100.0
             );
         }
+    }
+
+    #[test]
+    fn model_respects_attenuation_limit() {
+        let Some(mut h) = real(1) else { return };
+        let input = noise(96_000, 0.1);
+        let mut out = input.clone();
+        for chunk in out.chunks_mut(480) {
+            h.process(&mut [chunk], &[12.0, 100.0]);
+            h.settle();
+        }
+        let ratio = rms(&out[48_000..]) / rms(&input[48_000..]);
+        // 12 dB is a factor of 0.25; the model removes nearly all the rest.
+        assert!((0.24..0.3).contains(&ratio), "ratio {ratio}");
     }
 
     #[test]

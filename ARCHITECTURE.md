@@ -103,7 +103,7 @@ The UI renders controls from these specs, so adding an effect needs no UI code
 | Effect | Notes |
 |--------|-------|
 | RNNoise | FFI to system `librnnoise`; 480-sample frames, one frame latency regardless of host block size; wet/dry mix; optional VAD gate with grace period |
-| Hush | FFI to the official `libweya_nc` (DeepFilterNet-based, 16 kHz), loaded at runtime; suppresses noise and competing speakers; wet/dry mix; see below |
+| Hush | FFI to the official `libweya_nc` (DeepFilterNet-based, 16 kHz), loaded at runtime; suppresses noise and competing speakers; attenuation limit, wet/dry mix; see below |
 | Gain | ±36 dB, per-block ramp |
 | Noise gate | Linked peak detector, hysteresis, hold, attack/release, range |
 | Equalizer | 5 RBJ biquad bands (peak, shelves, low/high pass); coefficients recomputed only on change |
@@ -145,10 +145,13 @@ library, `libweya_nc`, built from the pinned Hush sources by
   + 124 filter delay = 2119 frames (44 ms). The 160-sample model delay was
   measured with the real model.
 - **Channels.** Each channel has its own session (stereo costs twice the CPU).
-- **Parameters.** Only Mix (wet/dry, applied to the latency-aligned dry
-  signal). The library's attenuation limit is set at session creation and is
-  the same blend in the STFT domain, so it is not exposed separately. The
-  meter shows the model's estimate of the input's speech-to-noise ratio.
+- **Parameters.** Attenuation limit (dB, 100 = unlimited) and Mix. The
+  library applies its attenuation limit as `enhanced * (1 - lim) + noisy * lim`
+  with the noisy signal aligned to the output, and only at session creation.
+  Otozane computes the same blend against its latency-aligned dry signal, so
+  the limit changes live without recreating sessions (and the noisy part
+  keeps its content above 8 kHz). Mix then scales the wet amount. The meter
+  shows the model's estimate of the input's speech-to-noise ratio.
 - **Failure modes.** `libweya_nc` is built with `panic = "abort"`: a panic
   inside it would stop the service (like a crashing plugin).
 
