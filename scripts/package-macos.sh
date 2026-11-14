@@ -37,5 +37,6 @@ codesign --verify --strict "$work/dmg/Otozane.app"
 
 name="otozane-v${version}-macos-arm64"
 ln -s /Applications "$work/dmg/Applications"
+rm -f "$out/$name.dmg"
 hdiutil create -quiet -volname Otozane -fs HFS+ -format UDZO -srcfolder "$work/dmg" "$out/$name.dmg"
 echo "Wrote $out/$name.dmg"
