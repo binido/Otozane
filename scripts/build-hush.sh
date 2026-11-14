@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Hush runtime (libweya_nc.so) from the official Hush sources and
+# Builds the Hush runtime (libweya_nc.so, .dylib on macOS) from the official Hush sources and
 # copies it, the model bundle and their licences into OUT_DIR.
 # Usage: scripts/build-hush.sh [OUT_DIR]   (default: third_party/hush, used by dev builds)
 # Needs git, cargo and a C toolchain. Pinned to one Hush commit; the model is checksummed.
@@ -21,18 +21,21 @@ git -C "$work" init -q src
 git -C "$work/src" fetch -q --depth 1 "$HUSH_REPO" "$HUSH_COMMIT"
 git -C "$work/src" checkout -q FETCH_HEAD
 src="$work/src"
-echo "$MODEL_SHA256  $src/deployment/models/$MODEL" | sha256sum -c --quiet -
+echo "$MODEL_SHA256  $src/deployment/models/$MODEL" | shasum -a 256 -c --quiet -
 
 crate="$src/native/weya_nc_build/weya_nc"
 CARGO_TARGET_DIR="$work/target" cargo build --release --locked --manifest-path "$crate/Cargo.toml"
 
-install -Dm755 "$work/target/release/libweya_nc.so" "$out/libweya_nc.so"
-install -Dm644 "$src/deployment/models/$MODEL" "$out/$MODEL"
-install -Dm644 "$src/LICENSE" "$out/Hush-LICENSE"
+lib=libweya_nc.so
+[[ "$(uname)" == Darwin ]] && lib=libweya_nc.dylib
+# BSD install on macOS has no -D, $out already exists.
+install -m755 "$work/target/release/$lib" "$out/$lib"
+install -m644 "$src/deployment/models/$MODEL" "$out/$MODEL"
+install -m644 "$src/LICENSE" "$out/Hush-LICENSE"
 vendor="$src/native/weya_nc_build/vendor/deep_filter"
-install -Dm644 "$vendor/LICENSE-MIT" "$out/DeepFilterNet-LICENSE-MIT"
-install -Dm644 "$vendor/LICENSE-APACHE" "$out/DeepFilterNet-LICENSE-APACHE"
-# Rust crates statically linked into libweya_nc.so, with their licences.
+install -m644 "$vendor/LICENSE-MIT" "$out/DeepFilterNet-LICENSE-MIT"
+install -m644 "$vendor/LICENSE-APACHE" "$out/DeepFilterNet-LICENSE-APACHE"
+# Rust crates statically linked into the library, with their licences.
 cargo tree --locked --manifest-path "$crate/Cargo.toml" -e normal --prefix none \
   --format '{p} ({l})' | grep -v '(proc-macro)' | sed 's/ (\*)$//; s| (/[^)]*)||' | sort -u > "$out/Hush-crates.txt"
 echo "Hush $HUSH_COMMIT" > "$out/VERSION"

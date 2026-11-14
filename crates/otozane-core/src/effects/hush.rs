@@ -22,7 +22,11 @@ pub const PARAMS: &[ParamSpec] = &[
     ParamSpec::new("mix", "Mix", 0.0, 100.0, 100.0, "%"),
 ];
 
-pub const LIB: &str = "libweya_nc.so";
+pub const LIB: &str = if cfg!(target_os = "macos") {
+    "libweya_nc.dylib"
+} else {
+    "libweya_nc.so"
+};
 pub const MODEL: &str = "advanced_dfnet16k_model_best_onnx.tar.gz";
 
 /// Hush frame: 10 ms at 16 kHz.
@@ -383,6 +387,8 @@ fn search_dirs() -> Vec<PathBuf> {
         .and_then(|e| e.parent().map(PathBuf::from))
     {
         dirs.push(bin.join("../lib/otozane/hush"));
+        // macOS app bundle: Contents/MacOS/otozaned -> Contents/Resources/hush.
+        dirs.push(bin.join("../Resources/hush"));
     }
     // Development: scripts/build-hush.sh puts it here.
     dirs.push(PathBuf::from(concat!(

@@ -156,7 +156,8 @@ library, `libweya_nc`, built from the pinned Hush sources by
 - **Loading.** `EffectKind::create` loads the library with `libloading` and
   the model once per process (on the controller thread), then creates one
   session per channel. The files are looked up in `$OTOZANE_HUSH_DIR`,
-  `<binary dir>/../lib/otozane/hush` (packages, `~/.local` installs) and
+  `<binary dir>/../lib/otozane/hush` (packages, `~/.local` installs),
+  `<binary dir>/../Resources/hush` (the macOS app bundle) and
   `third_party/hush` in the source tree (development). If they are missing or
   fail to load, the slot becomes a pass-through with the error on its card;
   its parameters are kept in the profile. A failed load is not cached.
