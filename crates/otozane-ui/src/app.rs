@@ -395,7 +395,7 @@ impl App {
                     (
                         icons::CIRCLE_ALERT,
                         p.text_weak,
-                        "BlackHole 2ch is not installed: brew install blackhole-2ch".into(),
+                        "Otozane Microphone is not installed".into(),
                     )
                 } else {
                     (
@@ -406,6 +406,13 @@ impl App {
                 };
                 ui.label(icon(glyph, 14.0).color(c));
                 ui.label(RichText::new(text).small());
+                #[cfg(target_os = "macos")]
+                if !st.virtual_source_ready
+                    && crate::driver::can_install()
+                    && ui.button("Install").clicked()
+                {
+                    crate::driver::install();
+                }
             });
         });
 
@@ -768,6 +775,27 @@ impl App {
                 }
             });
         });
+        #[cfg(target_os = "macos")]
+        {
+            section(ui, "Virtual microphone");
+            card(ui, |ui| {
+                let installed = crate::driver::installed();
+                let sub = if installed {
+                    "Installed. Apps record from \u{201c}Otozane Microphone\u{201d}"
+                } else {
+                    "Not installed. Asks for the administrator password"
+                };
+                row(ui, "Otozane Microphone", Some(sub), |ui| {
+                    if installed && ui.add(widgets::danger(ui, "Remove")).clicked() {
+                        crate::driver::remove();
+                    }
+                    let label = if installed { "Reinstall" } else { "Install" };
+                    if crate::driver::can_install() && ui.add(widgets::tonal(ui, label)).clicked() {
+                        crate::driver::install();
+                    }
+                });
+            });
+        }
         section(ui, "Background");
         card(ui, |ui| {
             row(
@@ -936,6 +964,14 @@ fn device_label(st: &Status, name: Option<&str>) -> String {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.sync();
+        #[cfg(target_os = "macos")]
+        if let Some(r) = crate::driver::take_result() {
+            let (msg, is_error) = match r {
+                Ok(m) => (m, false),
+                Err(e) => (format!("Virtual microphone: {e}"), true),
+            };
+            self.toasts.push((msg, Instant::now(), is_error));
+        }
         #[cfg(target_os = "macos")]
         if self.has_tray {
             crate::menubar::on_frame(ui.ctx(), self.status.as_ref());

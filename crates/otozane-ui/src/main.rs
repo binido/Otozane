@@ -6,6 +6,8 @@
 mod app;
 mod chrome;
 mod client;
+#[cfg(target_os = "macos")]
+mod driver;
 mod effects;
 #[allow(dead_code)] // generated table, not every icon is used yet
 mod icons;

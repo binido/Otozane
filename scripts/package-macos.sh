@@ -4,6 +4,7 @@
 # Env: TARGET_DIR - cargo target directory (default target),
 #      RNNOISE_LICENSE - RNNoise COPYING file (default third_party/rnnoise/RNNoise-COPYING),
 #      HUSH_DIR - output of scripts/build-hush.sh (default third_party/hush); required.
+#      DRIVER_DIR - output of scripts/build-driver.sh (default third_party/driver); required.
 # The app is signed ad-hoc, without notarization.
 set -euo pipefail
 
@@ -14,6 +15,8 @@ bin="${TARGET_DIR:-$root/target}/release"
 rnnoise_license="${RNNOISE_LICENSE:-$root/third_party/rnnoise/RNNoise-COPYING}"
 hush="${HUSH_DIR:-$root/third_party/hush}"
 [[ -f "$hush/libweya_nc.dylib" ]] || { echo "No Hush runtime in $hush; run scripts/build-hush.sh" >&2; exit 1; }
+driver="${DRIVER_DIR:-$root/third_party/driver}"
+[[ -d "$driver/Otozane.driver" ]] || { echo "No driver in $driver; run scripts/build-driver.sh" >&2; exit 1; }
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 work="$(mktemp -d)"
@@ -31,6 +34,9 @@ install -m644 "$hush/advanced_dfnet16k_model_best_onnx.tar.gz" "$app/Resources/h
 for f in Hush-LICENSE DeepFilterNet-LICENSE-MIT DeepFilterNet-LICENSE-APACHE Hush-crates.txt; do
   install -m644 "$hush/$f" "$app/Resources/licenses/"
 done
+# Audio driver, copied to /Library/Audio/Plug-Ins/HAL by Settings -> Install. Signed by build-driver.sh.
+cp -R "$driver/Otozane.driver" "$app/Resources/"
+install -m644 "$driver"/libASPL-LICENSE* "$app/Resources/licenses/"
 
 # Icon from the 256 px PNG, the largest bundled raster.
 icons="$work/otozane.iconset"

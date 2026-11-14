@@ -13,6 +13,6 @@
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>Otozane processes your microphone and plays the result into BlackHole for other apps.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Otozane processes your microphone and publishes the result as Otozane Microphone for other apps.</string>
 </dict>
 </plist>

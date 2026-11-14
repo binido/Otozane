@@ -43,9 +43,8 @@ Physical microphone → effect chain → Otozane Microphone → applications
 
 Otozane creates a virtual input device named **Otozane Microphone**. Discord,
 OBS, browsers and any other application that records from PipeWire can select it
-as a regular microphone. On macOS the processed audio goes to
-[BlackHole 2ch](https://existential.audio/blackhole/), and applications select
-**BlackHole 2ch** instead, see [macOS](#macos).
+as a regular microphone. On macOS the device comes from a small audio driver
+shipped with the app, see [macOS](#macos).
 
 Scope:
 
@@ -167,27 +166,27 @@ Any distribution, from the unpacked tarball:
 
 macOS 26 or later, Apple Silicon.
 
-1. Install BlackHole 2ch, the virtual device that applications record from:
-
-   ```sh
-   brew install blackhole-2ch
-   ```
-
-2. Download `otozane-v<version>-macos-arm64.dmg` from the
+1. Download `otozane-v<version>-macos-arm64.dmg` from the
    [release page](https://github.com/binido/Otozane/releases/latest) and drag
    **Otozane** into **Applications**.
-3. The app is not notarized. On first launch, right-click it in Finder and
+2. The app is not notarized. On first launch, right-click it in Finder and
    choose **Open**, or allow it in **System Settings → Privacy & Security**.
-4. Allow microphone access when macOS asks.
-5. Select **BlackHole 2ch** as the input device in the application you record with.
+3. Allow microphone access when macOS asks.
+4. Click **Install** next to "Otozane Microphone is not installed" on the
+   Overview page and enter the administrator password. This copies the audio
+   driver to `/Library/Audio/Plug-Ins/HAL/Otozane.driver` and restarts the
+   system audio service, so all sound pauses for a moment.
+5. Select **Otozane Microphone** as the input device in the application you record with.
+
+**Settings → Virtual microphone** reinstalls the driver after an update or removes it.
 
 Differences from Linux:
 
-- The output is BlackHole 2ch, not a device owned by Otozane. Everything any
-  application plays into BlackHole is mixed with the processed microphone, so
-  route other audio (for example Audio Hijack or a Multi-Output Device) elsewhere.
-- **Automatic** skips virtual devices, including BlackHole, even when one is the
-  system default input.
+- Otozane Microphone is a driver, so it stays in the device list while the
+  service is stopped and outputs silence then. Only the Otozane service can
+  play into it, audio from other apps is dropped.
+- **Automatic** skips virtual devices (BlackHole, Otozane Microphone and the
+  like), even when one is the system default input.
 - Devices running at other rates (Bluetooth headsets at 16 kHz, outputs at
   44.1 kHz) are resampled to and from 48 kHz.
 - **Settings → Start with session** installs a launchd agent,
@@ -250,10 +249,12 @@ install -Dm644 packaging/otozane.desktop ~/.local/share/applications/otozane.des
 
 The desktop entry runs `otozane` from `PATH`.
 
-On macOS (Rust and Xcode command line tools, BlackHole 2ch installed):
+On macOS (Rust, Xcode command line tools, `cmake`):
 
 ```sh
 scripts/build-rnnoise.sh          # once: static RNNoise into third_party/rnnoise
+scripts/build-hush.sh             # once: Hush runtime into third_party/hush
+scripts/build-driver.sh           # once: Otozane.driver into third_party/driver
 cargo build --release
 scripts/package-macos.sh 0.3.0 dist   # optional: Otozane.app in a .dmg
 ```

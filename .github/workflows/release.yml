@@ -101,6 +101,9 @@ jobs:
       - name: Build Hush
         run: scripts/build-hush.sh third_party/hush
 
+      - name: Build the audio driver
+        run: scripts/build-driver.sh third_party/driver
+
       - name: Build
         run: |
           cargo build --release --locked

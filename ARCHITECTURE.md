@@ -61,13 +61,21 @@ crate compiles to nothing on the other OS.
 ## Audio path (macOS)
 
 ```
- microphone ──► cpal input stream ──► resample to 48 kHz ──► Engine::process ──► SPSC ring ──► cpal output stream ──► BlackHole 2ch ──► apps
+ microphone ──► cpal input stream ──► resample to 48 kHz ──► Engine::process ──► SPSC ring ──► cpal output stream ──► Otozane Microphone ──► apps
                 (device rate)                                                                    (48 kHz, stereo)
 ```
 
-- **No own virtual device.** BlackHole 2ch (UID `BlackHole2ch_UID`) is the
-  output, found by UID. When it is missing nothing is captured and the status
-  says how to install it. BlackHole is never listed as an input.
+- **Virtual microphone driver.** `packaging/macos/driver` is a Core Audio
+  server plug-in built on libASPL (`scripts/build-driver.sh`). It publishes one
+  device, Otozane Microphone (UID `OtozaneMicrophone_UID`, 48 kHz, stereo,
+  float), with an output and an input stream joined by a ring indexed by
+  device sample time. Writes are accepted only from the client with bundle id
+  `io.github.binido.otozane.service` (otozaned's embedded Info.plist), so no
+  other app can leak into the microphone. Reads outside the writer's current
+  run return silence, so a stopped service leaves no stale audio. The device
+  can be the default input but not the default output. The app installs it
+  into `/Library/Audio/Plug-Ins/HAL` with an administrator prompt and restarts
+  coreaudiod. The backend finds the device by UID and never lists it as an input.
 - **Devices are polled once a second** through `cpal`, ids are Core Audio
   device UIDs. A stream whose error callback fired (device unplugged) is
   dropped and recreated when the device is back. Transport type (virtual,
@@ -78,7 +86,7 @@ crate compiles to nothing on the other OS.
 - **Monitor** plays the monitor ring to the system default output at that
   device's rate, resampled the same way, with the same stale-audio rule. It is
   recreated when the default output changes and skipped while the default
-  output is BlackHole.
+  output is Otozane Microphone.
 - **Microphone permission.** `Otozane.app` declares `NSMicrophoneUsageDescription`.
   `otozaned` embeds its own Info.plist (`__TEXT,__info_plist`, see
   `crates/otozane-service/build.rs`) for when launchd starts it, macOS then

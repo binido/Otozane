@@ -1,9 +1,10 @@
 //! Core Audio backend: captures the selected microphone, runs the engine in
-//! its input callback and plays the result into BlackHole 2ch, which
+//! its input callback and plays the result into the Otozane Microphone driver
+//! (packaging/macos/driver), which
 //! applications record from as a microphone.
 //!
 //! Devices are polled once a second. Streams at rates other than 48 kHz are
-//! resampled on the way in (capture) and out (monitor). BlackHole runs at 48 kHz.
+//! resampled on the way in (capture) and out (monitor). The driver runs at 48 kHz.
 
 #![cfg(target_os = "macos")]
 
@@ -18,8 +19,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const RATE: u32 = otozane_core::SAMPLE_RATE;
-/// UID of BlackHole 2ch, the device apps record from. Never offered as an input.
-const OUTPUT_UID: &str = "BlackHole2ch_UID";
+/// UID of the Otozane Microphone device, which apps record from. Never offered as an input.
+const OUTPUT_UID: &str = "OtozaneMicrophone_UID";
 /// Fade-in applied when a capture stream starts (20 ms).
 const FADE_IN_FRAMES: usize = 960;
 /// Output ring capacity (0.5 s). Excess is discarded, so this bounds memory, not latency.
@@ -103,7 +104,7 @@ impl Backend {
         let _ = self.tx.send(Command::SetInput(input));
     }
 
-    /// Stops or resumes capture. While muted BlackHole receives silence.
+    /// Stops or resumes capture. While muted the virtual microphone receives silence.
     pub fn set_muted(&self, muted: bool) {
         let _ = self.tx.send(Command::SetMuted(muted));
     }
@@ -206,7 +207,7 @@ impl Main {
         {
             self.output = None;
             self.output = find(self.host.output_devices(), OUTPUT_UID)
-                .and_then(|d| log_err("BlackHole output", create_output(&d, &self.shared)));
+                .and_then(|d| log_err("virtual microphone", create_output(&d, &self.shared)));
         }
         let output_ready = self.output.is_some();
 
@@ -242,9 +243,9 @@ impl Main {
             self.capture = None;
             Some(match (&target, self.muted, output_ready) {
                 (_, true, _) => CaptureState::Muted,
-                (_, _, false) => CaptureState::Error(
-                    "BlackHole 2ch is not installed: brew install blackhole-2ch".into(),
-                ),
+                (_, _, false) => {
+                    CaptureState::Error("Otozane Microphone driver is not installed".into())
+                }
                 (None, ..) => CaptureState::WaitingForDevice(self.desired.clone()),
                 (Some(uid), ..) => {
                     match find(self.host.input_devices(), uid)
@@ -310,7 +311,7 @@ fn find(
     devices.ok()?.find(|d| uid(d).as_deref() == Some(uid_))
 }
 
-/// Microphones, without BlackHole itself.
+/// Microphones, without our own virtual microphone.
 fn input_devices(host: &cpal::Host) -> Vec<Device> {
     let Ok(list) = host.input_devices() else {
         return Vec::new();
@@ -468,7 +469,7 @@ fn create_capture(device: &cpal::Device, shared: &Shared) -> Result<Running, Str
     play(stream, uid(device).unwrap_or_default(), failed)
 }
 
-/// Plays the output ring into BlackHole at 48 kHz.
+/// Plays the output ring into the virtual microphone at 48 kHz.
 fn create_output(device: &cpal::Device, shared: &Shared) -> Result<Running, String> {
     let config = cpal::StreamConfig {
         channels: STEREO as u16,
