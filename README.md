@@ -194,7 +194,7 @@ Differences from Linux:
   service inside `Otozane.app`. After moving the app, turn the option off and on again.
 - The window uses the system frame. A microphone icon in the menu bar shows the
   service state, switches **On / No effects / Muted**, shows the window and quits.
-  Closing the window only hides it, the menu bar icon brings it back.
+  Closing the window only hides it, the menu bar icon or the Dock icon brings it back.
 - Not available: Hush Noise Suppression, VST3 plugins.
 
 ### Start with the session

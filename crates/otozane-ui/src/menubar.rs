@@ -2,8 +2,11 @@
 //! mode, shows the window and quits. Closing the window only hides it.
 
 use crate::client::Mode;
-use objc2::MainThreadMarker;
+use objc2::rc::Retained;
+use objc2::runtime::NSObject;
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::NSApplication;
+use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager};
 use otozane_core::protocol::{CaptureState, Client, Status};
 use std::cell::RefCell;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -11,6 +14,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 struct Items {
     _icon: TrayIcon,
+    _reopen: Retained<ReopenHandler>,
     state: MenuItem,
     modes: Vec<(Mode, CheckMenuItem)>,
     show: MenuItem,
@@ -55,9 +59,11 @@ pub fn spawn() -> Result<(), String> {
         .with_menu(Box::new(menu))
         .build()
         .map_err(|e| e.to_string())?;
+    let reopen = ReopenHandler::install();
     ITEMS.with_borrow_mut(|i| {
         *i = Some(Items {
             _icon: tray,
+            _reopen: reopen,
             state,
             modes,
             show,
@@ -106,6 +112,45 @@ impl Items {
             item.set_checked(Some(*m) == mode);
             item.set_enabled(mode.is_some());
         }
+    }
+}
+
+define_class!(
+    /// Receives the reopen Apple event, sent when the Dock icon of the running app is clicked.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OtozaneReopenHandler"]
+    struct ReopenHandler;
+
+    impl ReopenHandler {
+        #[unsafe(method(handleReopen:withReplyEvent:))]
+        fn handle_reopen(&self, _event: &NSAppleEventDescriptor, _reply: &NSAppleEventDescriptor) {
+            show(&NSApplication::sharedApplication(self.mtm()));
+        }
+    }
+);
+
+impl ReopenHandler {
+    /// Replaces the reopen handler. winit's app delegate does not answer
+    /// reopen, so without it a Dock click leaves a closed window closed.
+    fn install() -> Retained<Self> {
+        // kCoreEventClass ('aevt') and kAEReopenApplication ('rapp').
+        const CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
+        const REOPEN_APPLICATION: u32 = u32::from_be_bytes(*b"rapp");
+        let mtm = MainThreadMarker::new().expect("menu bar is set up on the main thread");
+        let handler: Retained<Self> = unsafe { msg_send![Self::alloc(mtm), init] };
+        // SAFETY: the selector matches the method above, the event manager
+        // does not retain the handler, so Items keeps it alive.
+        unsafe {
+            NSAppleEventManager::sharedAppleEventManager()
+                .setEventHandler_andSelector_forEventClass_andEventID(
+                    &handler,
+                    sel!(handleReopen:withReplyEvent:),
+                    CORE_EVENT_CLASS,
+                    REOPEN_APPLICATION,
+                );
+        }
+        handler
     }
 }
 

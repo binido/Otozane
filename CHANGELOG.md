@@ -13,8 +13,8 @@ for the tagged version as the GitHub release notes and fails if it is missing.
   their microphone. All built-in effects except Hush, profiles, modes and
   **Listen to myself** work as on Linux. **Start with session** installs a
   launchd agent. The window has the system frame, and a menu bar icon
-  switches the mode and brings the window back after it is closed. No Hush
-  or VST3 plugins on macOS yet.
+  switches the mode. Closing the window only hides it, the menu bar icon or
+  the Dock icon brings it back. No Hush or VST3 plugins on macOS yet.
 
 ## 0.3.0 - 2026-11-13
 
