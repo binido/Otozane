@@ -13,7 +13,8 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
 
-macOS: Rust, Xcode command line tools, `brew install blackhole-2ch` and, for
+macOS: Rust, Xcode command line tools, `cmake`, the Otozane Microphone driver
+installed (`scripts/build-driver.sh`, then Install in the app) and, for
 `scripts/e2e-macos.sh`, `ffmpeg`. RNNoise is not in Homebrew, build it once:
 
 ```sh
@@ -41,7 +42,8 @@ path, also used by the UI and `scripts/ipc.py`) and `OTOZANE_NODE_PREFIX`
 | Script | Purpose |
 |--------|---------|
 | `scripts/e2e.sh [input.wav] [chain-json]` | End-to-end audio check. Creates a temporary test source with `pw-loopback`, starts `otozaned` with an isolated config, sets the chain, plays a file into the test source and records **Otozane Microphone** with `pw-record`, then prints peak/RMS per 100 ms. Does not touch real devices. |
-| `scripts/e2e-macos.sh` | macOS end-to-end check. Starts `otozaned` with an isolated config, records **BlackHole 2ch** with `ffmpeg` with effects off (expects microphone room noise) and muted (expects digital silence). Uses the real microphone, `INPUT=<device UID>` picks one. |
+| `scripts/e2e-macos.sh` | macOS end-to-end check. Starts `otozaned` with an isolated config, records **Otozane Microphone** with `ffmpeg` with effects off (expects microphone room noise) and muted (expects digital silence). Uses the real microphone, `INPUT=<device UID>` picks one. |
+| `scripts/build-driver.sh [OUT_DIR]` | Builds the Otozane Microphone audio driver (`Otozane.driver`) from `packaging/macos/driver` with the pinned libASPL release (default `third_party/driver`). |
 | `scripts/build-rnnoise.sh [OUT_DIR]` | Builds static RNNoise 0.2 (default `third_party/rnnoise`), for systems without a package. |
 | `scripts/package-macos.sh VERSION OUT_DIR` | Builds `Otozane.app` from `target/release` (`TARGET_DIR` overrides), signs it ad-hoc and packs `otozane-vVERSION-macos-arm64.dmg`. |
 | `scripts/tone.py OUT.wav SECONDS AMP [noise]` | Writes a 1 kHz sine or white noise test file. |

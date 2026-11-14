@@ -11,6 +11,7 @@
 | [egui / eframe](https://github.com/emilk/egui) | Desktop UI (OpenGL on Linux, Metal through wgpu on macOS) | MIT OR Apache-2.0 |
 | [cpal](https://github.com/RustAudio/cpal), [objc2](https://github.com/madsmtm/objc2) crates | macOS audio backend and AppKit calls | Apache-2.0 / MIT |
 | [tray-icon](https://github.com/tauri-apps/tray-icon) | macOS menu bar icon | MIT OR Apache-2.0 |
+| [libASPL](https://github.com/gavv/libASPL) v3.1.2 | Otozane Microphone audio driver on macOS, linked statically into `Otozane.driver` | MIT, with parts under Apple sample code licences (`libASPL-LICENSE*`) |
 | [rtrb](https://github.com/mgeier/rtrb) | Lock-free SPSC ring buffers | MIT OR Apache-2.0 |
 | serde, serde_json, toml | Configuration and IPC | MIT OR Apache-2.0 |
 | [vst3](https://github.com/coupler-rs/vst3-rs) (vst3-rs 0.3) | VST3 interface bindings for plugin hosting | MIT OR Apache-2.0 |

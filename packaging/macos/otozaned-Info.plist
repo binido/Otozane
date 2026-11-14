@@ -4,6 +4,6 @@
 <dict>
     <key>CFBundleIdentifier</key><string>io.github.binido.otozane.service</string>
     <key>CFBundleName</key><string>Otozane</string>
-    <key>NSMicrophoneUsageDescription</key><string>Otozane processes your microphone and plays the result into BlackHole for other apps.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Otozane processes your microphone and publishes the result as Otozane Microphone for other apps.</string>
 </dict>
 </plist>

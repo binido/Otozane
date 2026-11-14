@@ -17,8 +17,4 @@ pub mod protocol;
 pub const SAMPLE_RATE: u32 = 48_000;
 
 /// Device that applications record the processed microphone from.
-pub const VIRTUAL_DEVICE: &str = if cfg!(target_os = "macos") {
-    "BlackHole 2ch"
-} else {
-    "Otozane Microphone"
-};
+pub const VIRTUAL_DEVICE: &str = "Otozane Microphone";

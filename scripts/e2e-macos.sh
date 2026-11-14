@@ -1,7 +1,7 @@
 #!/bin/bash
-# End-to-end check on macOS: microphone -> otozaned -> BlackHole 2ch -> ffmpeg.
-# Records BlackHole with effects off (expects the room noise of the microphone),
-# then muted (expects digital silence). Apps writing into BlackHole break the second check.
+# End-to-end check on macOS: microphone -> otozaned -> Otozane Microphone -> ffmpeg.
+# Records Otozane Microphone with effects off (expects the room noise of the
+# microphone), then muted (expects digital silence). Needs the driver installed.
 # Usage: scripts/e2e-macos.sh   (env: BIN, OUT, INPUT = device UID, default automatic)
 # The service runs with an isolated config directory and socket under $OUT.
 set -u
@@ -17,7 +17,7 @@ kill -0 $SV 2>/dev/null || { echo "otozaned failed to start:"; cat svc.log; exit
 ipc() { python3 "$DIR/ipc.py" "$@" >/dev/null; }
 ipc "{\"cmd\":\"set_input\",\"device\":${INPUT:+\"$INPUT\"}${INPUT:-null}}" '{"cmd":"set_processing","enabled":false}'
 sleep 1.5
-rec() { ffmpeg -hide_banner -loglevel error -y -f avfoundation -i ":BlackHole 2ch" -t "$1" -ar 48000 -c:a pcm_s16le "$2"; }
+rec() { ffmpeg -hide_banner -loglevel error -y -f avfoundation -i ":Otozane Microphone" -t "$1" -ar 48000 -c:a pcm_s16le "$2"; }
 rec 2 on.wav
 ipc '{"cmd":"set_muted","muted":true}'; sleep 0.5
 rec 1 muted.wav

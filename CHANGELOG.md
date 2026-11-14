@@ -8,10 +8,11 @@ for the tagged version as the GitHub release notes and fails if it is missing.
 ### New
 
 - **macOS version** (macOS 26+, Apple Silicon), shipped as a `.dmg` with
-  `Otozane.app`. The processed microphone goes to
-  [BlackHole 2ch](https://existential.audio/blackhole/), which apps select as
-  their microphone. All built-in effects including Hush, profiles, modes and
-  **Listen to myself** work as on Linux. **Start with session** installs a
+  `Otozane.app`. Apps record from **Otozane Microphone**, a small audio
+  driver shipped with the app and installed from it with the administrator
+  password. Only Otozane can play into it, so no other app's audio ends up in
+  your microphone. No BlackHole needed. All built-in effects including Hush,
+  profiles, modes and **Listen to myself** work as on Linux. **Start with session** installs a
   launchd agent. The window has the system frame, and a menu bar icon
   switches the mode. Closing the window only hides it, the menu bar icon or
   the Dock icon brings it back. No VST3 plugins on macOS yet.
