@@ -125,7 +125,8 @@ curl -fsSL https://raw.githubusercontent.com/binido/Otozane/main/scripts/install
 | Other | Release tarball into `~/.local` |
 
 Runtime requirements: PipeWire 0.3.49+, glibc 2.36+. RNNoise is built into the
-release binaries; the Hush runtime and model ship in `/usr/lib/otozane/hush/`.
+release binaries; the Hush runtime and model ship in `/usr/lib/otozane/hush/`
+(inside `Otozane.app` on macOS).
 
 After installation, select **Otozane Microphone** as the input device in the
 application you record with.
@@ -195,7 +196,7 @@ Differences from Linux:
 - The window uses the system frame. A microphone icon in the menu bar shows the
   service state, switches **On / No effects / Muted**, shows the window and quits.
   Closing the window only hides it, the menu bar icon or the Dock icon brings it back.
-- Not available: Hush Noise Suppression, VST3 plugins.
+- Not available: VST3 plugins.
 
 ### Start with the session
 
@@ -230,7 +231,7 @@ Requirements:
 - Linux with PipeWire and WirePlumber (developed on CachyOS, PipeWire 1.6).
 - Rust stable 1.85+, `clang` (for PipeWire bindings), `pkgconf`.
 - System libraries `pipewire` and `rnnoise`. On Arch: `pacman -S pipewire rnnoise clang`.
-- For Hush Noise Suppression: `git` and `scripts/build-hush.sh`, which builds
+- For Hush Noise Suppression: `git` and `scripts/build-hush.sh` (Linux and macOS), which builds
   the Hush runtime from source into `third_party/hush` (about 2 minutes). Without
   it Otozane works, and a Hush effect shows "Hush is not installed".
 

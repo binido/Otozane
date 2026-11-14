@@ -2,7 +2,8 @@
 # Builds Otozane.app and otozane-vVERSION-macos-arm64.dmg from release binaries.
 # Usage: scripts/package-macos.sh VERSION OUT_DIR
 # Env: TARGET_DIR - cargo target directory (default target),
-#      RNNOISE_LICENSE - RNNoise COPYING file (default third_party/rnnoise/RNNoise-COPYING).
+#      RNNOISE_LICENSE - RNNoise COPYING file (default third_party/rnnoise/RNNoise-COPYING),
+#      HUSH_DIR - output of scripts/build-hush.sh (default third_party/hush); required.
 # The app is signed ad-hoc, without notarization.
 set -euo pipefail
 
@@ -11,6 +12,8 @@ version="$1" out="$2"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 bin="${TARGET_DIR:-$root/target}/release"
 rnnoise_license="${RNNOISE_LICENSE:-$root/third_party/rnnoise/RNNoise-COPYING}"
+hush="${HUSH_DIR:-$root/third_party/hush}"
+[[ -f "$hush/libweya_nc.dylib" ]] || { echo "No Hush runtime in $hush; run scripts/build-hush.sh" >&2; exit 1; }
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 work="$(mktemp -d)"
@@ -21,6 +24,13 @@ mkdir -p "$app/MacOS" "$app/Resources/licenses"
 sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" > "$app/Info.plist"
 install -m755 "$bin/otozane" "$bin/otozaned" "$app/MacOS/"
 install -m644 "$root/LICENSE" "$root/THIRD_PARTY.md" "$rnnoise_license" "$app/Resources/licenses/"
+# Hush runtime, found by the service as ../Resources/hush.
+mkdir -p "$app/Resources/hush"
+install -m755 "$hush/libweya_nc.dylib" "$app/Resources/hush/"
+install -m644 "$hush/advanced_dfnet16k_model_best_onnx.tar.gz" "$app/Resources/hush/"
+for f in Hush-LICENSE DeepFilterNet-LICENSE-MIT DeepFilterNet-LICENSE-APACHE Hush-crates.txt; do
+  install -m644 "$hush/$f" "$app/Resources/licenses/"
+done
 
 # Icon from the 256 px PNG, the largest bundled raster.
 icons="$work/otozane.iconset"
@@ -30,7 +40,8 @@ for s in 16 32 128 256; do
 done
 iconutil -c icns "$icons" -o "$app/Resources/otozane.icns"
 
-# The service is signed on its own first, under its own identifier, then the bundle.
+# Nested code is signed first: the Hush library, the service under its own identifier, then the bundle.
+codesign --force --sign - "$app/Resources/hush/libweya_nc.dylib"
 codesign --force --sign - --identifier io.github.binido.otozane.service "$app/MacOS/otozaned"
 codesign --force --sign - "$work/dmg/Otozane.app"
 codesign --verify --strict "$work/dmg/Otozane.app"
