@@ -3,19 +3,51 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
-## Unreleased
+## 0.4.0 - 2026-11-14
 
 ### New
 
-- **macOS version** (macOS 26+, Apple Silicon), shipped as a `.dmg` with
-  `Otozane.app`. Apps record from **Otozane Microphone**, a small audio
-  driver shipped with the app and installed from it with the administrator
-  password. Only Otozane can play into it, so no other app's audio ends up in
-  your microphone. No BlackHole needed. All built-in effects including Hush,
-  profiles, modes and **Listen to myself** work as on Linux. **Start with session** installs a
-  launchd agent. The window has the system frame, and a menu bar icon
-  switches the mode. Closing the window only hides it, the menu bar icon or
-  the Dock icon brings it back. No VST3 plugins on macOS yet.
+- **macOS version.** Otozane now runs on macOS 26 and later on Apple Silicon.
+  Download `otozane-v0.4.0-macos-arm64.dmg` and drag **Otozane** into
+  **Applications**. The app is not notarized: on first launch right-click it
+  in Finder and choose **Open**.
+- **Otozane Microphone on macOS.** A small audio driver ships inside the app.
+  Click **Install** on the Overview page, enter the administrator password,
+  and select **Otozane Microphone** as the microphone in Discord, OBS, Zoom or
+  any other app. No BlackHole or other virtual audio software is needed.
+  - Only Otozane can play into it, so audio from other apps never ends up in
+    your microphone.
+  - It can be the system default input and is never offered as an output.
+  - **Settings → Virtual microphone** reinstalls the driver after an update or
+    removes it. Installing restarts the system audio service, so all sound
+    pauses for a moment.
+- **Everything from Linux works on macOS**: all built-in effects including
+  RNNoise and Hush, profiles, **On / No effects / Muted** and **Listen to
+  myself**. Hush uses about 2% of one core on Apple Silicon.
+  - **Automatic** input follows the system default microphone and skips
+    virtual devices.
+  - Microphones and outputs at other sample rates (Bluetooth headsets at
+    16 kHz, outputs at 44.1 kHz) are resampled to and from 48 kHz.
+- **Menu bar icon on macOS.** Shows the service state, switches the mode, shows
+  the window and quits. Closing the window only hides it, the menu bar icon or
+  the Dock icon brings it back.
+- **Start with session on macOS** installs a launch agent, so the audio
+  service starts when you log in.
+- The macOS window uses the system frame (rounded corners, traffic lights)
+  and is drawn with Metal.
+
+Not available on macOS yet: VST3 plugins.
+
+### Other
+
+- No behaviour changes on Linux. Device handling shared by both platforms
+  moved into `otozane-core`.
+- Building on macOS: `scripts/build-rnnoise.sh`, `scripts/build-hush.sh`,
+  `scripts/build-driver.sh`, then `cargo build --release` and
+  `scripts/package-macos.sh`. See [DEVELOPMENT.md](DEVELOPMENT.md).
+- `scripts/ipc.py` finds the service socket on macOS.
+
+**Full diff**: https://github.com/binido/Otozane/compare/v0.3.0...v0.4.0
 
 ## 0.3.0 - 2026-11-13
 
