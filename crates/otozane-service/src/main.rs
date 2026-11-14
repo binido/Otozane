@@ -1,8 +1,13 @@
-//! `otozaned`: runs the audio engine and PipeWire backend, and serves the
+//! `otozaned`: runs the audio engine and audio backend, and serves the
 //! IPC socket used by the desktop UI and other clients.
 
 mod service;
 mod store;
+
+#[cfg(target_os = "macos")]
+use otozane_coreaudio as backend;
+#[cfg(target_os = "linux")]
+use otozane_pipewire as backend;
 
 use otozane_core::config::Profile;
 use otozane_core::protocol::{self, Request, Response};
@@ -71,7 +76,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ctl.shared
         .processing_enabled
         .store(settings.processing_enabled, Ordering::Relaxed);
-    let backend = otozane_pipewire::Backend::start(eng, settings.input_device.clone());
+    let backend = backend::Backend::start(eng, settings.input_device.clone());
     let mut svc = Service::new(ctl, backend, store, settings);
     // Also makes sure the active profile exists on disk.
     svc.apply_chain(profile.chain)?;
@@ -106,7 +111,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let _ = std::fs::remove_file(&path);
-    // Dropping the service drops the backend, which destroys our PipeWire objects.
+    // Dropping the service drops the backend, which stops its streams.
     let svc = Arc::try_unwrap(svc).ok();
     drop(svc);
     Ok(())

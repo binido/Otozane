@@ -5,6 +5,7 @@
 //! lives on a normal thread, builds effect instances, and hands them over
 //! through lock-free queues.
 
+pub mod backend;
 pub mod config;
 pub mod dsp;
 pub mod effects;
@@ -14,3 +15,10 @@ pub mod protocol;
 
 /// Internal processing sample rate. RNNoise requires exactly 48 kHz.
 pub const SAMPLE_RATE: u32 = 48_000;
+
+/// Device that applications record the processed microphone from.
+pub const VIRTUAL_DEVICE: &str = if cfg!(target_os = "macos") {
+    "BlackHole 2ch"
+} else {
+    "Otozane Microphone"
+};

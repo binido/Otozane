@@ -1,5 +1,6 @@
-//! Client-side window chrome: the window has no system decorations, so the
-//! title bar drag area, the window buttons and edge resizing live here.
+//! Client-side window chrome: on Linux the window has no system decorations,
+//! so the title bar drag area, the window buttons and edge resizing live here.
+//! macOS keeps its system frame and uses only the drag area.
 
 use crate::theme;
 use egui::viewport::ResizeDirection;
@@ -7,6 +8,8 @@ use egui::{Context, CursorIcon, PointerButton, Rect, Sense, Stroke, Ui, Vec2, Vi
 
 /// Height of the title bar strip at the top of the window.
 pub const HEIGHT: f32 = 64.0;
+/// Extra top space in the sidebar on macOS, below the traffic lights.
+pub const TRAFFIC_LIGHTS: f32 = 20.0;
 
 fn maximized(ctx: &Context) -> bool {
     ctx.input(|i| i.viewport().maximized.unwrap_or(false))

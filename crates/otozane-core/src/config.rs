@@ -103,15 +103,22 @@ impl EffectConfig {
     }
 }
 
-/// Returns `$XDG_CONFIG_HOME/otozane`, falling back to `~/.config/otozane`.
+/// Returns `$XDG_CONFIG_HOME/otozane`, falling back to `~/.config/otozane`,
+/// or to `~/Library/Application Support/Otozane` on macOS.
 pub fn config_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
-    std::env::var_os("XDG_CONFIG_HOME")
+    if let Some(p) = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("otozane")
+    {
+        return p.join("otozane");
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match home {
+        Some(h) if cfg!(target_os = "macos") => h.join("Library/Application Support/Otozane"),
+        Some(h) => h.join(".config/otozane"),
+        None => PathBuf::from("otozane"),
+    }
 }
 
 /// Returns an id not used by any effect in `chain`.

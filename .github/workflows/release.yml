@@ -81,8 +81,41 @@ jobs:
           name: dist-${{ matrix.arch }}
           path: dist/*
 
+  build-macos:
+    name: Build macOS arm64
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read the version
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        run: |
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build RNNoise
+        run: scripts/build-rnnoise.sh third_party/rnnoise
+
+      - name: Build
+        run: |
+          cargo build --release --locked
+          if otool -L target/release/otozaned | grep -q rnnoise; then echo "RNNoise linked dynamically"; exit 1; fi
+
+      - name: Test
+        run: cargo test --release --locked --workspace
+
+      - name: Package
+        run: scripts/package-macos.sh "$VERSION" dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-macos-arm64
+          path: dist/*
+
   publish:
-    needs: build
+    needs: [build, build-macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5

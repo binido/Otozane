@@ -1,11 +1,11 @@
 //! Request handling and persistence for the running service.
 
+use crate::backend::{Backend, CaptureState};
 use crate::store::{Store, validate_name};
 use otozane_core::config::{EffectConfig, Profile, Settings};
 use otozane_core::effects::EffectKind;
 use otozane_core::engine::{ControlError, Controller, External};
 use otozane_core::protocol::{self, Diagnostics, EffectInfo, PluginList, Request, Response};
-use otozane_pipewire::{Backend, CaptureState};
 use otozane_plugins::PluginControl;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -171,8 +171,11 @@ impl Service {
         match req {
             Request::Status => Response::Status(Box::new(self.status())),
             Request::SetInput { device } => {
-                if device.as_deref() == Some(otozane_pipewire::virtual_node_name()) {
-                    return err("Otozane Microphone cannot be its own input");
+                if device.as_deref() == Some(crate::backend::virtual_node_name()) {
+                    return err(format!(
+                        "{} cannot be its own input",
+                        otozane_core::VIRTUAL_DEVICE
+                    ));
                 }
                 self.backend.set_input(device.clone());
                 self.settings.input_device = device;
