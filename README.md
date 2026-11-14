@@ -192,7 +192,10 @@ Differences from Linux:
 - **Settings → Start with session** installs a launchd agent,
   `~/Library/LaunchAgents/io.github.binido.otozane.plist`, pointing at the
   service inside `Otozane.app`. After moving the app, turn the option off and on again.
-- Not available: tray icon, Hush Noise Suppression, VST3 plugins.
+- The window uses the system frame. A microphone icon in the menu bar shows the
+  service state, switches **On / No effects / Muted**, shows the window and quits.
+  Closing the window only hides it, the menu bar icon brings it back.
+- Not available: Hush Noise Suppression, VST3 plugins.
 
 ### Start with the session
 

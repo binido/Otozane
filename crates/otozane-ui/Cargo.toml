@@ -24,3 +24,6 @@ ksni = { version = "0.3", default-features = false, features = ["async-io", "blo
 # Metal through wgpu, OpenGL on macOS is deprecated.
 [target.'cfg(target_os = "macos")'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["wgpu"] }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSWindow"] }
+tray-icon = "0.26.1"

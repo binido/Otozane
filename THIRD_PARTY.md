@@ -8,7 +8,9 @@
 | [Hush](https://github.com/pulp-vision/Hush) (Weya AI, commit `9f6414e`): `libweya_nc` and the `advanced_dfnet16k` model | Hush Noise Suppression. Built from source by `scripts/build-hush.sh`, shipped in `/usr/lib/otozane/hush/` (licence as `Hush-LICENSE`) | Apache License 2.0 |
 | [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) `deep_filter` 0.5.3 (vendored in Hush) and the Rust crates linked into `libweya_nc` ([tract](https://github.com/sonos/tract), rustfft, ndarray, ...) | Inference inside `libweya_nc.so`. Crates and licences are listed in `Hush-crates.txt` | MIT OR Apache-2.0 (`DeepFilterNet-LICENSE-MIT`, `DeepFilterNet-LICENSE-APACHE`); a few crates MIT, Unlicense, Zlib, BSD-2-Clause, CC0-1.0 or Unicode-3.0 alternatives, see the list |
 | [PipeWire](https://pipewire.org) via [pipewire-rs](https://gitlab.freedesktop.org/pipewire/pipewire-rs) | Audio backend | MIT |
-| [egui / eframe](https://github.com/emilk/egui) | Desktop UI | MIT OR Apache-2.0 |
+| [egui / eframe](https://github.com/emilk/egui) | Desktop UI (OpenGL on Linux, Metal through wgpu on macOS) | MIT OR Apache-2.0 |
+| [cpal](https://github.com/RustAudio/cpal), [objc2](https://github.com/madsmtm/objc2) crates | macOS audio backend and AppKit calls | Apache-2.0 / MIT |
+| [tray-icon](https://github.com/tauri-apps/tray-icon) | macOS menu bar icon | MIT OR Apache-2.0 |
 | [rtrb](https://github.com/mgeier/rtrb) | Lock-free SPSC ring buffers | MIT OR Apache-2.0 |
 | serde, serde_json, toml | Configuration and IPC | MIT OR Apache-2.0 |
 | [vst3](https://github.com/coupler-rs/vst3-rs) (vst3-rs 0.3) | VST3 interface bindings for plugin hosting | MIT OR Apache-2.0 |

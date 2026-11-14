@@ -216,6 +216,10 @@ impl App {
         crate::chrome::drag_area(ui, top.expand2(egui::vec2(12.0, 0.0)));
         // Centers the 36 px logo row in the title bar strip.
         ui.add_space((chrome::HEIGHT - 36.0) / 2.0);
+        if cfg!(target_os = "macos") {
+            // Keeps the logo below the traffic lights.
+            ui.add_space(chrome::TRAFFIC_LIGHTS);
+        }
         ui.horizontal(|ui| {
             let dark = ui.visuals().dark_mode;
             if self.logo.as_ref().is_none_or(|(d, _)| *d != dark) {
@@ -811,7 +815,9 @@ impl App {
             }
             if self.status.is_some() {
                 widgets::divider(ui);
-                let sub = if self.has_tray {
+                let sub = if self.has_tray && cfg!(target_os = "macos") {
+                    "Keeps running when this window is closed; Otozane stays in the menu bar"
+                } else if self.has_tray {
                     "Keeps running when this window is closed; the window hides to the tray"
                 } else {
                     "Keeps running when this window is closed"
@@ -930,6 +936,10 @@ fn device_label(st: &Status, name: Option<&str>) -> String {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.sync();
+        #[cfg(target_os = "macos")]
+        if self.has_tray {
+            crate::menubar::on_frame(ui.ctx(), self.status.as_ref());
+        }
         dev_screenshot(ui);
         let p = theme::current(ui.ctx());
         egui::Panel::left("nav")
@@ -954,10 +964,12 @@ impl eframe::App for App {
             )
             .show(ui, |ui| {
                 chrome::drag_area(ui, ui.max_rect().expand2(egui::vec2(14.0, 0.0)));
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    chrome::buttons,
-                );
+                if !cfg!(target_os = "macos") {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        chrome::buttons,
+                    );
+                }
             });
         egui::CentralPanel::default()
             .frame(Frame::new().fill(p.window).inner_margin(Margin {
@@ -992,7 +1004,9 @@ impl eframe::App for App {
                         });
                     });
             });
-        chrome::resize_edges(ui.ctx());
+        if !cfg!(target_os = "macos") {
+            chrome::resize_edges(ui.ctx());
+        }
         if !self.toasts.is_empty() {
             egui::Area::new(egui::Id::unique("toasts"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))

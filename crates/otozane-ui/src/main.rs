@@ -11,6 +11,8 @@ mod effects;
 mod icons;
 #[cfg(target_os = "macos")]
 mod launchd;
+#[cfg(target_os = "macos")]
+mod menubar;
 mod theme;
 #[cfg(target_os = "linux")]
 mod tray;
@@ -28,11 +30,20 @@ fn options() -> eframe::NativeOptions {
             .with_title("Otozane")
             .with_app_id("otozane")
             .with_icon(icon())
-            // Title bar and window buttons are drawn by the app (see chrome.rs).
-            .with_decorations(false)
             .with_inner_size([980.0, 680.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
+    };
+    options.viewport = if cfg!(target_os = "macos") {
+        // System frame for rounded corners and the traffic lights, content under the hidden title bar.
+        options
+            .viewport
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+    } else {
+        // Title bar and window buttons are drawn by the app (see chrome.rs).
+        options.viewport.with_decorations(false)
     };
     // Screenshots get a fixed size; tiling compositors (niri) float such windows.
     if std::env::var_os("OTOZANE_SCREENSHOT").is_some() {
@@ -52,7 +63,12 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Otozane",
         options(),
-        Box::new(|cc| Ok(Box::new(app::App::new(cc, false)))),
+        Box::new(|cc| {
+            let has_menubar = menubar::spawn()
+                .map_err(|e| eprintln!("no menu bar icon: {e}"))
+                .is_ok();
+            Ok(Box::new(app::App::new(cc, has_menubar)))
+        }),
     )
 }
 
