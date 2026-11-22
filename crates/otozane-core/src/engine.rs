@@ -126,13 +126,14 @@ impl Slot {
 /// filled by moving the matching slot out of the previous chain, so effect
 /// state survives reordering without allocating on the audio thread.
 struct Chain {
+    /// Channel count the processors were built for.
+    channels: usize,
     ids: Vec<u64>,
     slots: Vec<Option<Slot>>,
 }
 
 /// Real-time half of the engine. Owned by the audio callback.
 pub struct Engine {
-    channels: usize,
     chain: Box<Chain>,
     incoming: rtrb::Consumer<Box<Chain>>,
     garbage: rtrb::Producer<Box<Chain>>,
@@ -141,8 +142,9 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn channels(&self) -> usize {
-        self.channels
+    /// Applies a pending chain without audio, for when no stream drives the engine.
+    pub fn pump(&mut self) {
+        self.apply_pending();
     }
 
     fn apply_pending(&mut self) {
@@ -166,13 +168,19 @@ impl Engine {
         let _ = self.garbage.push(next);
     }
 
-    /// Processes interleaved audio with `self.channels()` channels in place.
-    pub fn process_interleaved(&mut self, buf: &mut [f32]) {
+    /// Processes interleaved audio with `channels` channels in place.
+    pub fn process_interleaved(&mut self, buf: &mut [f32], channels: usize) {
         self.apply_pending();
         if buf.is_empty() {
             return;
         }
-        let ch = self.channels;
+        // Audio of the old stream before it is recreated for a new channel
+        // count. Silence, so unprocessed audio never reaches the output.
+        if channels != self.chain.channels {
+            buf.fill(0.0);
+            return;
+        }
+        let ch = channels;
         let master = self.shared.processing_enabled.load(Ordering::Relaxed);
         let in_peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         for chunk in buf.chunks_mut(MAX_BLOCK * ch) {
@@ -240,8 +248,8 @@ pub fn new(sample_rate: f32, channels: usize) -> (Controller, Engine) {
     let shared = Arc::new(EngineShared::default());
     shared.processing_enabled.store(true, Ordering::Relaxed);
     let engine = Engine {
-        channels,
         chain: Box::new(Chain {
+            channels,
             ids: Vec::new(),
             slots: Vec::new(),
         }),
@@ -296,18 +304,44 @@ impl Controller {
         chain: &[EffectConfig],
         factory: &mut Factory<'_>,
     ) -> Result<(), ControlError> {
+        self.build(chain, self.channels, factory)
+    }
+
+    /// Rebuilds every effect of the chain for `channels` (1 or 2). Plugin
+    /// state comes from the configuration, so it has to be saved there first.
+    pub fn set_channels(
+        &mut self,
+        channels: usize,
+        chain: &[EffectConfig],
+        factory: &mut Factory<'_>,
+    ) -> Result<(), ControlError> {
+        assert!((1..=MAX_CHANNELS).contains(&channels));
+        self.build(chain, channels, factory)
+    }
+
+    fn build(
+        &mut self,
+        chain: &[EffectConfig],
+        channels: usize,
+        factory: &mut Factory<'_>,
+    ) -> Result<(), ControlError> {
         self.collect_garbage();
         if self.outgoing.slots() == 0 {
             return Err(ControlError::Busy);
         }
+        let rebuild = channels != self.channels;
         let mut next = Chain {
+            channels,
             ids: Vec::with_capacity(chain.len()),
             slots: Vec::with_capacity(chain.len()),
         };
         let mut infos = Vec::with_capacity(chain.len());
         for cfg in chain {
             let existing = self.slots.iter().position(|s| {
-                s.shared.id == cfg.id && s.shared.kind == cfg.kind && s.plugin == cfg.plugin
+                !rebuild
+                    && s.shared.id == cfg.id
+                    && s.shared.kind == cfg.kind
+                    && s.plugin == cfg.plugin
             });
             let info = match existing {
                 Some(i) => {
@@ -336,7 +370,7 @@ impl Controller {
                         let params: Vec<ParamDesc> =
                             cfg.kind.params().iter().map(ParamDesc::from).collect();
                         let defaults = params.iter().map(|d| d.default).collect();
-                        match cfg.kind.create(self.sample_rate, self.channels, MAX_BLOCK) {
+                        match cfg.kind.create(self.sample_rate, channels, MAX_BLOCK) {
                             Ok(p) => (p, params, defaults, None),
                             // Keep the parameters so the profile still round-trips.
                             Err(e) => (
@@ -382,6 +416,7 @@ impl Controller {
         self.outgoing
             .push(Box::new(next))
             .map_err(|_| ControlError::Busy)?;
+        self.channels = channels;
         self.slots = infos;
         self.shared.latency_frames.store(
             self.slots.iter().map(|s| s.latency).sum::<usize>() as u32,
@@ -481,23 +516,23 @@ mod tests {
         let (mut ctl, mut eng) = new(48000.0, 2);
         ctl.set_chain(&[gain_cfg(1, 6.0)], &mut no_plugins).unwrap();
         let mut buf = vec![0.5f32; 2048];
-        eng.process_interleaved(&mut buf);
-        eng.process_interleaved(&mut buf.clone());
+        eng.process_interleaved(&mut buf, 2);
+        eng.process_interleaved(&mut buf.clone(), 2);
         let mut buf = vec![0.5f32; 2048];
-        eng.process_interleaved(&mut buf);
+        eng.process_interleaved(&mut buf, 2);
         assert!((buf[2047] - 0.5 * 1.995).abs() < 0.01);
 
         // Parameter change is picked up without a chain swap.
         ctl.set_param(1, "gain", 0.0).unwrap();
         let mut buf = vec![0.5f32; 2048];
-        eng.process_interleaved(&mut buf);
+        eng.process_interleaved(&mut buf, 2);
         assert!((buf[2047] - 0.5).abs() < 1e-3);
 
         // Disabling crossfades to dry.
         ctl.set_param(1, "gain", -36.0).unwrap();
         ctl.set_enabled(1, false).unwrap();
         let mut buf = vec![0.5f32; 4096];
-        eng.process_interleaved(&mut buf);
+        eng.process_interleaved(&mut buf, 2);
         assert!((buf[4095] - 0.5).abs() < 1e-6);
 
         // Unknown targets are rejected.
@@ -579,12 +614,33 @@ mod tests {
         let (mut ctl, mut eng) = new(48000.0, 1);
         ctl.set_chain(&[gain_cfg(1, 0.0), gain_cfg(2, 0.0)], &mut no_plugins)
             .unwrap();
-        eng.process_interleaved(&mut [0.0; 64]);
+        eng.process_interleaved(&mut [0.0; 64], 1);
         ctl.set_chain(&[gain_cfg(2, 0.0), gain_cfg(1, 0.0)], &mut no_plugins)
             .unwrap();
-        eng.process_interleaved(&mut [0.0; 64]);
+        eng.process_interleaved(&mut [0.0; 64], 1);
         assert!(eng.chain.slots.iter().all(|s| s.is_some()));
         assert_eq!(eng.chain.ids, vec![2, 1]);
+        ctl.collect_garbage();
+    }
+
+    #[test]
+    fn channel_switch_rebuilds_chain() {
+        let (mut ctl, mut eng) = new(48000.0, 1);
+        ctl.set_chain(&[gain_cfg(1, 6.0)], &mut no_plugins).unwrap();
+        eng.process_interleaved(&mut [0.0; 64], 1);
+        ctl.set_param(1, "gain", 0.0).unwrap();
+        ctl.set_channels(2, &[gain_cfg(1, 6.0)], &mut no_plugins)
+            .unwrap();
+        // Audio in the old format is muted until the stream is recreated.
+        let mut buf = [0.5f32; 64];
+        eng.process_interleaved(&mut buf, 1);
+        assert_eq!(buf, [0.0; 64]);
+        assert_eq!(eng.chain.channels, 2);
+        // A fresh processor was built and both channels are processed.
+        let mut buf = [0.5f32; 128];
+        eng.process_interleaved(&mut buf, 2);
+        assert!((buf[126] - 0.5 * 1.995).abs() < 0.01);
+        assert!((buf[127] - 0.5 * 1.995).abs() < 0.01);
         ctl.collect_garbage();
     }
 }
