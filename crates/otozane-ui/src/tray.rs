@@ -48,18 +48,16 @@ impl ksni::Tray for Tray {
     fn icon_name(&self) -> String {
         "otozane-symbolic".into()
     }
-    /// White fallback for hosts that do not find the symbolic icon.
+    /// Fallback for hosts that do not find the symbolic icon: white with a
+    /// dark outline, so it stays visible on light and dark panels.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/tray.png"))
             .expect("bundled tray icon is a valid PNG");
-        let mut data = icon.rgba;
-        for px in data.as_chunks_mut::<4>().0 {
-            *px = [px[3], 255, 255, 255]; // white ARGB
-        }
+        let (w, h) = (icon.width as usize, icon.height as usize);
         vec![ksni::Icon {
-            width: icon.width as i32,
-            height: icon.height as i32,
-            data,
+            width: w as i32,
+            height: h as i32,
+            data: outlined(&icon.rgba, w, h),
         }]
     }
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -170,6 +168,30 @@ pub fn spawn(tx: Sender<Cmd>, wait: bool) -> Option<Handle<Tray>> {
     Some(handle)
 }
 
+/// Turns a mask (alpha of RGBA) into white ARGB with a black outline
+/// `R` pixels wide.
+fn outlined(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
+    const R: usize = 2;
+    let alpha = |x: usize, y: usize| rgba[(y * w + x) * 4 + 3] as u32;
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let a = alpha(x, y);
+            let mut halo = 0;
+            for ny in y.saturating_sub(R)..(y + R + 1).min(h) {
+                for nx in x.saturating_sub(R)..(x + R + 1).min(w) {
+                    halo = halo.max(alpha(nx, ny));
+                }
+            }
+            // White over the black outline: a + halo * (1 - a).
+            let out_a = a + halo * (255 - a) / 255;
+            let white = (255 * a).checked_div(out_a).unwrap_or(0);
+            out.extend([out_a as u8, white as u8, white as u8, white as u8]);
+        }
+    }
+    out
+}
+
 /// Writes the symbolic icon into an icon theme under the cache dir and
 /// returns that theme path, empty when it cannot be written.
 fn install_icon() -> String {
@@ -215,5 +237,23 @@ fn state(client: &mut Option<Client>) -> (&'static str, Option<Mode>) {
             *client = None;
             ("Service stopped", None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn outline_surrounds_white_pixel() {
+        // 5x5 mask with one opaque pixel in the centre.
+        let mut rgba = vec![0u8; 5 * 5 * 4];
+        rgba[(2 * 5 + 2) * 4 + 3] = 255;
+        let argb = super::outlined(&rgba, 5, 5);
+        let px = |x: usize, y: usize| &argb[(y * 5 + x) * 4..][..4];
+        assert_eq!(px(2, 2), [255, 255, 255, 255]); // the shape stays white
+        assert_eq!(px(0, 0), [255, 0, 0, 0]); // two pixels out is black outline
+        let mut rgba = vec![0u8; 7 * 7 * 4];
+        rgba[(3 * 7 + 3) * 4 + 3] = 255;
+        let argb = super::outlined(&rgba, 7, 7);
+        assert_eq!(argb[0], 0); // three pixels out is transparent
     }
 }
