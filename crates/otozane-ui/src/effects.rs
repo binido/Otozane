@@ -302,12 +302,7 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
     let mut close = false;
     widgets::card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(icon(icons::SEARCH, 16.0).color(p.text_weak));
-            ui.add(
-                egui::TextEdit::singleline(&mut query)
-                    .hint_text("Search plugins by name, vendor or category")
-                    .desired_width(ui.available_width() - 150.0),
-            );
+            // Buttons first, right to left, so the field takes exactly the width left over.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button(icon(icons::X, 15.0))
@@ -328,6 +323,14 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
                 {
                     app.send(Request::ScanPlugins);
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(icon(icons::SEARCH, 16.0).color(p.text_weak));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut query)
+                            .hint_text("Search plugins by name, vendor or category")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
             });
         });
         ui.add_space(6.0);
