@@ -13,7 +13,9 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuIt
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 struct Items {
-    _icon: TrayIcon,
+    icon: TrayIcon,
+    /// Symbolic name of the icon variant shown.
+    icon_name: &'static str,
     _reopen: Retained<ReopenHandler>,
     state: MenuItem,
     modes: Vec<(Mode, CheckMenuItem)>,
@@ -49,13 +51,9 @@ pub fn spawn() -> Result<(), String> {
     menu.append(&show).map_err(|e| e.to_string())?;
     menu.append(&quit).map_err(|e| e.to_string())?;
 
-    // Black on transparent, macOS recolours it for a light or dark menu bar.
-    // `rsvg-convert packaging/tray.svg -o crates/otozane-ui/assets/tray.png`
-    let png = include_bytes!("../assets/tray.png");
-    let icon = eframe::icon_data::from_png_bytes(png).map_err(|e| e.to_string())?;
-    let icon = Icon::from_rgba(icon.rgba, icon.width, icon.height).map_err(|e| e.to_string())?;
+    let shown = crate::tray_icon("Connecting");
     let tray = TrayIconBuilder::new()
-        .with_icon_templated(icon)
+        .with_icon_templated(icon(shown)?)
         .with_tooltip("Otozane")
         .with_menu(Box::new(menu))
         .build()
@@ -63,7 +61,8 @@ pub fn spawn() -> Result<(), String> {
     let reopen = ReopenHandler::install();
     ITEMS.with_borrow_mut(|i| {
         *i = Some(Items {
-            _icon: tray,
+            icon: tray,
+            icon_name: shown.name,
             _reopen: reopen,
             state,
             modes,
@@ -165,8 +164,9 @@ fn show(app: &NSApplication) {
 
 /// Keeps the menu in step with the window's status and turns a window close
 /// into hiding the app. Call every frame.
-// ponytail: the menu refreshes only while the window draws frames, a mode
-// changed by another client while hidden shows up on the next show.
+// ponytail: the menu and the icon refresh only while the window draws frames,
+// a state or mode changed while hidden shows up on the next show. A status
+// poll thread posting to the main thread lifts this.
 pub fn on_frame(ctx: &egui::Context, status: Option<&Status>) {
     if ctx.input(|i| i.viewport().close_requested())
         && let Some(mtm) = MainThreadMarker::new()
@@ -185,10 +185,23 @@ pub fn on_frame(ctx: &egui::Context, status: Option<&Status>) {
             None => ("Service stopped", None),
         };
         i.state.set_text(text);
+        let shown = crate::tray_icon(text);
+        if shown.name != i.icon_name
+            && let Ok(icon) = icon(shown)
+            && i.icon.set_icon_templated(Some(icon)).is_ok()
+        {
+            i.icon_name = shown.name;
+        }
         if mode != i.mode {
             i.set_mode(mode);
         }
     });
+}
+
+/// Template image, macOS recolours it for a light or dark menu bar.
+fn icon(variant: &crate::TrayIcon) -> Result<Icon, String> {
+    let icon = eframe::icon_data::from_png_bytes(variant.png).map_err(|e| e.to_string())?;
+    Icon::from_rgba(icon.rgba, icon.width, icon.height).map_err(|e| e.to_string())
 }
 
 fn label(st: &Status) -> &'static str {

@@ -46,12 +46,12 @@ impl ksni::Tray for Tray {
     }
     /// Symbolic, so the host recolours it for its panel.
     fn icon_name(&self) -> String {
-        "otozane-symbolic".into()
+        crate::tray_icon(self.state).name.into()
     }
     /// Fallback for hosts that do not find the symbolic icon: white with a
     /// dark outline, so it stays visible on light and dark panels.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/tray.png"))
+        let icon = eframe::icon_data::from_png_bytes(crate::tray_icon(self.state).png)
             .expect("bundled tray icon is a valid PNG");
         let (w, h) = (icon.width as usize, icon.height as usize);
         vec![ksni::Icon {
@@ -192,7 +192,7 @@ fn outlined(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
     out
 }
 
-/// Writes the symbolic icon into an icon theme under the cache dir and
+/// Writes the symbolic icons into an icon theme under the cache dir and
 /// returns that theme path, empty when it cannot be written.
 fn install_icon() -> String {
     use std::path::PathBuf;
@@ -204,10 +204,12 @@ fn install_icon() -> String {
         return String::new();
     };
     let dir = root.join("hicolor/scalable/apps");
-    let svg = include_bytes!("../../../packaging/tray.svg");
-    match std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(dir.join("otozane-symbolic.svg"), svg))
-    {
+    let written = std::fs::create_dir_all(&dir).and_then(|()| {
+        crate::TRAY_ICONS
+            .iter()
+            .try_for_each(|i| std::fs::write(dir.join(format!("{}.svg", i.name)), i.svg))
+    });
+    match written {
         Ok(()) => root.to_string_lossy().into_owned(),
         Err(e) => {
             eprintln!("tray icon: {e}");
