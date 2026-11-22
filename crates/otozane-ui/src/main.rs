@@ -86,8 +86,15 @@ fn options() -> eframe::NativeOptions {
         options.viewport.with_decorations(false)
     };
     // Screenshots get a fixed size; tiling compositors (niri) float such windows.
+    // OTOZANE_SCREENSHOT_SIZE=WxH overrides it, e.g. to check the minimum width.
     if std::env::var_os("OTOZANE_SCREENSHOT").is_some() {
-        let size = [1100.0, 720.0];
+        let size = std::env::var("OTOZANE_SCREENSHOT_SIZE")
+            .ok()
+            .and_then(|s| {
+                let (w, h) = s.split_once('x')?;
+                Some([w.parse().ok()?, h.parse().ok()?])
+            })
+            .unwrap_or([1100.0, 720.0]);
         options.viewport = options
             .viewport
             .with_inner_size(size)
