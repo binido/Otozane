@@ -76,7 +76,7 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                 }
                 ui.separator();
                 if ui
-                    .button(icon_text(icons::PUZZLE, "VST3 plugin..."))
+                    .button(icon_text(icons::PUZZLE, "VST3 / JSFX plugin..."))
                     .clicked()
                 {
                     app.browser.get_or_insert_with(String::new);
@@ -347,9 +347,9 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
         if app.plugins.plugins.is_empty() {
             ui.label(
                 RichText::new(if app.plugins.scanning {
-                    "Looking for VST3 plugins..."
+                    "Looking for plugins..."
                 } else {
-                    "No VST3 plugins found. Install some (e.g. lsp-plugins-vst3) and press Rescan."
+                    "No plugins found. Install VST3 plugins (e.g. lsp-plugins-vst3) or JSFX scripts (~/.config/REAPER/Effects) and press Rescan."
                 })
                 .weak(),
             );

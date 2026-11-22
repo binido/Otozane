@@ -3,6 +3,20 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
+## Unreleased
+
+### New
+
+- **JSFX plugins.** Effects written in REAPER's JSFX language now load like
+  VST3 plugins. Put the scripts in `~/.config/REAPER/Effects` (or any folder
+  added to the plugin directories), press **Rescan**, and pick them in the
+  plugin browser, marked JSFX.
+  - Sliders appear as parameters and are saved in the profile together with
+    the script's own state.
+  - A script that fails to compile shows the error on its effect card.
+  - Scripts with graphics (`@gfx`) work, but their graphics are not shown.
+    MIDI is not passed to scripts.
+
 ## 0.4.0 - 2026-11-14
 
 ### New

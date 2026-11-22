@@ -1,6 +1,7 @@
 //! Third-party plugin hosting. Plugins run in the process that loads them;
 //! there is no crash isolation for instances in the chain.
 
+pub mod jsfx;
 pub mod vst3;
 
 use otozane_core::config::{PluginFormat, PluginRef};
@@ -36,7 +37,7 @@ pub fn instantiate(
 ) -> Result<Instance, String> {
     match plugin.format {
         PluginFormat::Vst3 => vst3::instantiate(plugin, state, sample_rate, channels, max_block),
-        PluginFormat::Jsfx => Err("JSFX hosting is not implemented yet".into()),
+        PluginFormat::Jsfx => jsfx::instantiate(plugin, state, sample_rate, channels, max_block),
     }
 }
 
@@ -63,9 +64,9 @@ pub fn scan_bundle(path: &std::path::Path) -> Result<Vec<PluginInfo>, String> {
         .collect())
 }
 
-/// Scans every bundle in `dirs`, each in its own `scanner --scan PATH`
+/// Scans every VST3 bundle in `dirs`, each in its own `scanner --scan PATH`
 /// process, so a plugin that crashes or hangs while loading only fails its
-/// own entry.
+/// own entry. JSFX scripts are only parsed, so they are read in this process.
 pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> PluginList {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -132,6 +133,14 @@ pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> Plug
             },
         }
     }
+    let scripts: std::collections::BTreeSet<_> =
+        dirs.iter().flat_map(|d| jsfx::find_scripts(d)).collect();
+    for script in scripts {
+        match jsfx::scan(&script) {
+            Ok((plugin, category)) => list.plugins.push(PluginInfo { plugin, category }),
+            Err(e) => list.errors.push((script.display().to_string(), e)),
+        }
+    }
     list.plugins.sort_by(|a, b| {
         a.plugin
             .name
@@ -144,6 +153,7 @@ pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> Plug
 /// Standard plugin directories plus `extra`.
 pub fn search_dirs(extra: &[String]) -> Vec<std::path::PathBuf> {
     let mut v = vst3::default_dirs();
+    v.extend(jsfx::default_dirs());
     v.extend(extra.iter().map(std::path::PathBuf::from));
     v.dedup();
     v
