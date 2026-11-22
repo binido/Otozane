@@ -349,7 +349,7 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
                 RichText::new(if app.plugins.scanning {
                     "Looking for plugins..."
                 } else if cfg!(target_os = "macos") {
-                    "No plugins found. Install VST3 plugins or JSFX scripts (~/Library/Application Support/REAPER/Effects) and press Rescan."
+                    "No plugins found. Install JSFX scripts (~/Library/Application Support/REAPER/Effects) and press Rescan."
                 } else {
                     "No plugins found. Install VST3 plugins (e.g. lsp-plugins-vst3) or JSFX scripts (~/.config/REAPER/Effects) and press Rescan."
                 })
