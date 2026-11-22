@@ -2,8 +2,8 @@
 
 use crate::theme::{self, MEDIUM};
 use egui::{
-    Align2, Button, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Response, RichText,
-    Sense, Stroke, Ui, Vec2, WidgetInfo,
+    Align, Align2, Button, Color32, CornerRadius, FontFamily, FontId, Frame, Layout, Margin,
+    Response, RichText, Sense, Stroke, Ui, Vec2, WidgetInfo,
 };
 
 /// Icon glyph at the given size, in the current text color unless styled further.
@@ -74,23 +74,40 @@ pub fn card_frame(ui: &Ui) -> Frame {
 }
 
 /// Row with a title (and optional subtitle) on the left and controls on the right.
+/// Both sides are centered vertically. Centering needs the heights before layout,
+/// so they are taken from the previous frame.
 pub fn row(ui: &mut Ui, title: &str, subtitle: Option<&str>, controls: impl FnOnce(&mut Ui)) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(if subtitle.is_some() { 44.0 } else { 36.0 });
-        ui.vertical(|ui| {
-            if subtitle.is_some() {
-                ui.add_space(2.0);
-            } else {
-                ui.add_space(8.0);
-            }
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(title);
-            if let Some(s) = subtitle {
-                ui.label(RichText::new(s).small().weak());
-            }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), controls);
-    });
+    let id = ui.make_persistent_id(("row", title));
+    let min_h = if subtitle.is_some() { 44.0 } else { 36.0 };
+    let (row_h, text_h): (f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or((min_h, min_h));
+    let size = Vec2::new(ui.available_width(), row_h);
+    let measured = ui
+        .allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+            ui.set_min_height(row_h);
+            let text = ui
+                .vertical(|ui| {
+                    ui.add_space(((row_h - text_h) / 2.0).max(0.0));
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let mut rect = ui.label(title).rect;
+                    if let Some(s) = subtitle {
+                        rect = rect.union(ui.label(RichText::new(s).small().weak()).rect);
+                    }
+                    rect.height()
+                })
+                .inner;
+            let ctrl = ui
+                .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    controls(ui);
+                    ui.min_rect().height()
+                })
+                .inner;
+            (text.max(ctrl).max(min_h), text)
+        })
+        .inner;
+    if (measured.0 - row_h).abs() > 0.5 || (measured.1 - text_h).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(id, measured));
+        ui.ctx().request_discard("row height changed");
+    }
 }
 
 /// Thin divider between rows inside a card.
