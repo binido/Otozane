@@ -57,7 +57,7 @@ Scope:
 
 | Area | Details |
 |---|---|
-| Virtual device | `Otozane Microphone` is owned by the service and removed when the service stops. |
+| Virtual device | Apps record from **Otozane Microphone**. It stays available when processing stops through **Stop processing when the window is closed**. |
 | Input | Microphone selection. **Automatic** follows the system default microphone. A device that is unplugged and plugged back in is picked up again. |
 | Built-in effects | RNNoise noise suppression with optional voice-activity gate, Hush noise and background-speaker suppression, gain, noise gate, five-band parametric EQ, compressor, lookahead limiter. |
 | Effect chain | Reorderable. Parameters apply live. Bypass is click-free and a bypassed effect uses no CPU. |
@@ -195,7 +195,7 @@ Differences from Linux:
   service inside `Otozane.app`. After moving the app, turn the option off and on again.
 - The window uses the system frame. A microphone icon in the menu bar shows the
   service state, switches **On / No effects / Muted**, shows the window and quits.
-  Closing the window only hides it, the menu bar icon or the Dock icon brings it back.
+  By default, closing the window hides it. The menu bar icon or the Dock icon brings it back.
 - Not available: VST3 plugins.
 
 ### Start with the session
@@ -221,8 +221,18 @@ systemctl --user enable --now otozane
 
 </details>
 
-With a tray host, closing the window hides it. The service keeps running in both
-cases.
+By default, closing the window hides it when a tray host is available. The service
+continues to run.
+
+### Stop processing when the window is closed
+
+Turn on **Settings → Background → Stop processing when the window is closed**
+to start audio processing when you open Otozane and stop it when you close the
+window. The window and its tray or menu bar icon exit. **Otozane Microphone**
+remains selected in recording apps and outputs silence until you reopen Otozane.
+On Linux a small part of the service keeps the PipeWire device alive while
+processing is stopped. macOS uses the installed virtual microphone driver.
+This setting is off by default. Turning it on turns off and disables login start.
 
 ## Build from source
 

@@ -38,7 +38,7 @@ fn c_str(buf: &[c_char]) -> String {
     let bytes: Vec<u8> = buf
         .iter()
         .take_while(|&&c| c != 0)
-        .map(|&c| c as u8)
+        .map(|c| u8::from_ne_bytes(c.to_ne_bytes()))
         .collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
@@ -49,7 +49,9 @@ fn utf16_str(buf: &[TChar]) -> String {
 }
 
 fn uid_hex(tuid: &TUID) -> String {
-    tuid.iter().map(|b| format!("{:02X}", *b as u8)).collect()
+    tuid.iter()
+        .map(|b| format!("{:02X}", u8::from_ne_bytes(b.to_ne_bytes())))
+        .collect()
 }
 
 fn parse_uid(hex: &str) -> Option<TUID> {

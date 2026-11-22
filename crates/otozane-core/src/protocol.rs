@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Status,
+    Start,
+    SetStopOnClose {
+        enabled: bool,
+    },
     /// `None` follows the system default source (never a virtual one).
     SetInput {
         device: Option<String>,
@@ -77,6 +81,7 @@ pub enum Request {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Ok,
+    Stopped,
     Error { message: String },
     Status(Box<Status>),
     Profiles { names: Vec<String> },
@@ -167,6 +172,8 @@ pub struct Status {
     pub devices: Vec<DeviceInfo>,
     pub virtual_source_ready: bool,
     pub processing_enabled: bool,
+    #[serde(default)]
+    pub stop_on_close: bool,
     #[serde(default)]
     pub muted: bool,
     #[serde(default)]

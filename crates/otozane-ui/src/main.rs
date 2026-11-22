@@ -123,7 +123,7 @@ fn main() -> eframe::Result {
         "Otozane",
         options(),
         Box::new(|cc| {
-            let has_menubar = menubar::spawn()
+            let has_menubar = menubar::spawn(cc.egui_ctx.clone())
                 .map_err(|e| eprintln!("no menu bar icon: {e}"))
                 .is_ok();
             Ok(Box::new(app::App::new(cc, has_menubar)))
@@ -155,6 +155,9 @@ fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
 #[cfg(target_os = "linux")]
 fn main() -> eframe::Result {
     let hidden = std::env::args().any(|a| a == "--hidden");
+    if hidden && client::stop_on_close_enabled() {
+        return Ok(());
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     let tray = tray::spawn(tx, hidden);
     let Some(tray) = tray else {
@@ -162,10 +165,16 @@ fn main() -> eframe::Result {
     };
     if !hidden {
         window(Some(&tray))?;
+        if client::stop_on_close_enabled() {
+            return Ok(());
+        }
     }
     // The window event loop has ended (or never started): wait in the tray.
     while let Ok(tray::Cmd::Show) = rx.recv() {
         window(Some(&tray))?;
+        if client::stop_on_close_enabled() {
+            break;
+        }
     }
     Ok(())
 }

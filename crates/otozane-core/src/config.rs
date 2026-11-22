@@ -182,6 +182,7 @@ pub struct Settings {
     /// system default source (see `otozane_pipewire`).
     pub input_device: Option<String>,
     pub processing_enabled: bool,
+    pub stop_on_close: bool,
     pub active_profile: String,
     /// Capture channel count: 1 (mono) or 2 (stereo).
     pub channels: u32,
@@ -194,6 +195,7 @@ impl Default for Settings {
         Self {
             input_device: None,
             processing_enabled: true,
+            stop_on_close: false,
             active_profile: "Default".into(),
             channels: 1,
             plugin_dirs: Vec::new(),
@@ -204,6 +206,16 @@ impl Default for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_settings_keep_background_processing() {
+        let mut settings: Settings = toml::from_str("processing_enabled = false").unwrap();
+        assert!(!settings.stop_on_close);
+        assert!(!settings.processing_enabled);
+        settings.stop_on_close = true;
+        let saved = toml::to_string(&settings).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&saved).unwrap(), settings);
+    }
 
     #[test]
     fn profile_roundtrips_and_tolerates_missing_params() {

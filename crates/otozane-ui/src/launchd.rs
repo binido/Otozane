@@ -6,7 +6,7 @@ use std::process::Command;
 
 const LABEL: &str = "io.github.binido.otozane";
 
-fn plist_path() -> io::Result<PathBuf> {
+pub(crate) fn plist_path() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is not set"))?;
     Ok(Path::new(&home).join(format!("Library/LaunchAgents/{LABEL}.plist")))
 }
@@ -67,7 +67,7 @@ pub fn set_autostart(on: bool, start_now: bool) -> io::Result<()> {
     // Unloading an agent that is not loaded fails, that is fine.
     let _ = launchctl(&["bootout", &format!("{}/{LABEL}", domain())]);
     if !on {
-        return std::fs::remove_file(&path).or_else(|e| match e.kind() {
+        return std::fs::remove_file(path).or_else(|e| match e.kind() {
             io::ErrorKind::NotFound => Ok(()),
             _ => Err(e),
         });
@@ -86,7 +86,6 @@ pub fn set_autostart(on: bool, start_now: bool) -> io::Result<()> {
 /// detached from this process, from next to the current executable if
 /// present, else from `PATH`.
 pub fn start_service() -> io::Result<()> {
-    use std::os::unix::process::CommandExt;
     if let Ok(path) = plist_path()
         && path.exists()
     {
@@ -94,15 +93,7 @@ pub fn start_service() -> io::Result<()> {
         return launchctl(&["kickstart", &target])
             .or_else(|_| launchctl(&["bootstrap", &domain(), &path.display().to_string()]));
     }
-    let local = crate::client::local_service();
-    Command::new(local.as_deref().unwrap_or(Path::new("otozaned")))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        // Own process group, so closing the UI's terminal does not stop audio.
-        .process_group(0)
-        .spawn()
-        .map(|_| ())
+    crate::client::start_detached()
 }
 
 #[cfg(test)]

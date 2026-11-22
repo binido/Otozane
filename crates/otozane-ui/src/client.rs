@@ -1,7 +1,7 @@
 //! Background connection to `otozaned`. The UI thread never blocks on IPC:
 //! it queues requests and reads the latest published state.
 
-use otozane_core::config::Profile;
+use otozane_core::config::{Profile, Settings, config_dir};
 use otozane_core::protocol::{Client, PluginList, Request, Response, Status};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -65,35 +65,72 @@ pub struct State {
     pub status: Option<Status>,
     pub profiles: Vec<String>,
     pub plugins: PluginList,
+    pub stop_on_close: bool,
+    pub setting_stop_on_close: Option<bool>,
+    pub stop_on_close_unconfirmed: bool,
+    pub login_start: Option<(bool, bool)>,
     /// Messages for the user, newest last (`true` = error). Drained by the UI.
     pub messages: Vec<(String, bool)>,
 }
 
 pub struct ServiceClient {
-    tx: Sender<Request>,
+    tx: Sender<Command>,
     pub state: Arc<Mutex<State>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+enum Command {
+    Request(Request),
+    SetStopOnClose(bool),
+    Close,
 }
 
 impl ServiceClient {
-    pub fn spawn(ctx: egui::Context) -> Self {
+    pub fn spawn(ctx: egui::Context, stop_on_close: bool) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let state = Arc::new(Mutex::new(State {
             connection: Connection::Connecting,
             status: None,
             profiles: Vec::new(),
             plugins: PluginList::default(),
+            stop_on_close,
+            setting_stop_on_close: None,
+            stop_on_close_unconfirmed: false,
+            login_start: None,
             messages: Vec::new(),
         }));
         let st = state.clone();
-        std::thread::Builder::new()
+        let start_on_open = stop_on_close && std::env::var_os("OTOZANE_SCREENSHOT").is_none();
+        let thread = std::thread::Builder::new()
             .name("otozane-ipc".into())
-            .spawn(move || run(rx, st, ctx))
+            .spawn(move || run(rx, st, ctx, start_on_open))
             .expect("failed to spawn IPC thread");
-        Self { tx, state }
+        Self {
+            tx,
+            state,
+            thread: Some(thread),
+        }
     }
 
     pub fn send(&self, req: Request) {
-        let _ = self.tx.send(req);
+        let _ = self.tx.send(Command::Request(req));
+    }
+
+    pub fn set_stop_on_close(&self, enabled: bool) {
+        self.state.lock().unwrap().setting_stop_on_close = Some(enabled);
+        let _ = self.tx.send(Command::SetStopOnClose(enabled));
+    }
+
+    pub fn close(&mut self) {
+        let state = self.state.lock().unwrap();
+        if !state.stop_on_close && state.setting_stop_on_close.is_none() {
+            return;
+        }
+        drop(state);
+        let _ = self.tx.send(Command::Close);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 
     /// Asks for a file and imports it as a new profile named after the file.
@@ -116,7 +153,7 @@ impl ServiceClient {
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "Imported".into());
-                    let _ = tx.send(Request::ImportProfile { name, profile });
+                    let _ = tx.send(Command::Request(Request::ImportProfile { name, profile }));
                 }
                 Err(e) => state
                     .lock()
@@ -149,49 +186,77 @@ fn export_profile(name: String, profile: Profile, state: Arc<Mutex<State>>) {
     });
 }
 
-fn run(rx: Receiver<Request>, state: Arc<Mutex<State>>, ctx: egui::Context) {
+fn run(rx: Receiver<Command>, state: Arc<Mutex<State>>, ctx: egui::Context, start_on_open: bool) {
+    let startup = start_on_open.then(|| {
+        if let Err(e) = start_window_service() {
+            state
+                .lock()
+                .unwrap()
+                .messages
+                .push((format!("Could not start audio service: {e}"), true));
+        }
+        Instant::now()
+    });
     loop {
         match Client::connect() {
             Ok(client) => {
                 state.lock().unwrap().connection = Connection::Connected;
-                let err = session(client, &rx, &state, &ctx);
+                let Err(err) = session(client, &rx, &state, &ctx) else {
+                    return;
+                };
                 let mut s = state.lock().unwrap();
                 s.connection = Connection::Disconnected(err.to_string());
                 s.status = None;
             }
             Err(e) => state.lock().unwrap().connection = Connection::Disconnected(e.to_string()),
         }
-        // Requests queued while disconnected are stale. Stops once the window
-        // (and its sender) is gone.
+        // Ordinary edits queued while disconnected are stale.
+        ctx.request_repaint();
         loop {
-            match rx.try_recv() {
-                Ok(_) => {}
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(Command::Close) => {
+                    let remaining = startup.map_or(Duration::ZERO, |start| {
+                        Duration::from_secs(4).saturating_sub(start.elapsed())
+                    });
+                    close_service(remaining);
+                    return;
+                }
+                Ok(Command::SetStopOnClose(enabled)) => {
+                    apply_stop_on_close(&state, enabled);
+                    break;
+                }
+                Ok(Command::Request(_)) => {}
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return,
             }
         }
-        ctx.request_repaint();
-        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
 fn session(
     mut client: Client,
-    rx: &Receiver<Request>,
+    rx: &Receiver<Command>,
     state: &Arc<Mutex<State>>,
     ctx: &egui::Context,
-) -> std::io::Error {
+) -> std::io::Result<()> {
     let mut last_profiles = Instant::now() - Duration::from_secs(10);
     let handle = |client: &mut Client, req: &Request| -> std::io::Result<()> {
         let resp = client.request(req)?;
         let mut s = state.lock().unwrap();
         match resp {
-            Response::Status(st) => s.status = Some(*st),
+            Response::Status(st) => {
+                s.stop_on_close = st.stop_on_close;
+                if st.stop_on_close {
+                    s.stop_on_close_unconfirmed = false;
+                }
+                s.status = Some(*st);
+            }
             Response::Profiles { names } => s.profiles = names,
             Response::Plugins(list) => s.plugins = *list,
             Response::Error { message } => s.messages.push((message, true)),
             Response::Profile { name, profile } => export_profile(name, profile, state.clone()),
             Response::Ok => {}
+            Response::Stopped => return Err(std::io::Error::other("Audio service stopped")),
         }
         Ok(())
     };
@@ -201,7 +266,7 @@ fn session(
         loop {
             let timeout = deadline.saturating_duration_since(Instant::now());
             match rx.recv_timeout(timeout) {
-                Ok(req) => {
+                Ok(Command::Request(req)) => {
                     profiles_changed |= matches!(
                         req,
                         Request::LoadProfile { .. }
@@ -210,29 +275,112 @@ fn session(
                             | Request::RenameProfile { .. }
                             | Request::ImportProfile { .. }
                     );
-                    if let Err(e) = handle(&mut client, &req) {
-                        return e;
-                    }
+                    handle(&mut client, &req)?;
+                }
+                Ok(Command::SetStopOnClose(enabled)) => apply_stop_on_close(state, enabled),
+                Ok(Command::Close) => {
+                    close_service(Duration::ZERO);
+                    return Ok(());
                 }
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => {
-                    return std::io::Error::other("UI closed");
+                    return Ok(());
                 }
             }
         }
         if profiles_changed || last_profiles.elapsed() > Duration::from_secs(2) {
             for req in [Request::ListProfiles, Request::ListPlugins] {
-                if let Err(e) = handle(&mut client, &req) {
-                    return e;
-                }
+                handle(&mut client, &req)?;
             }
             last_profiles = Instant::now();
         }
-        if let Err(e) = handle(&mut client, &Request::Status) {
-            return e;
-        }
+        handle(&mut client, &Request::Status)?;
         ctx.request_repaint();
     }
+}
+
+fn connect_within(timeout: Duration) -> std::io::Result<Client> {
+    let start = Instant::now();
+    loop {
+        match Client::connect() {
+            Err(_) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(50)),
+            result => return result,
+        }
+    }
+}
+
+fn apply_stop_on_close(state: &Mutex<State>, enabled: bool) {
+    let mut unconfirmed = false;
+    let result = (|| {
+        start_window_service()?;
+        let mut client = connect_within(Duration::from_secs(4))?;
+        let login = enabled.then(LoginStart::read).transpose()?;
+        if let Some(login) = &login {
+            login.disable().map_err(|e| login.restore_after(e))?;
+        }
+        match client.request(&Request::SetStopOnClose { enabled }) {
+            Ok(Response::Ok) => Ok(()),
+            Ok(response) => {
+                let error = match response {
+                    Response::Error { message } => std::io::Error::other(message),
+                    _ => std::io::Error::other("Audio service stopped"),
+                };
+                Err(match &login {
+                    Some(login) => login.restore_after(error),
+                    None => error,
+                })
+            }
+            // An unanswered request may still save the setting.
+            Err(_) if enabled && stop_on_close_enabled() => Ok(()),
+            Err(e) if enabled => {
+                unconfirmed = true;
+                Err(std::io::Error::other(format!(
+                    "Save unconfirmed. Login startup stays off pending confirmation. {e}"
+                )))
+            }
+            Err(e) => Err(e),
+        }
+    })();
+    let login_start = (autostart_enabled(), login_window_enabled());
+    let mut state = state.lock().unwrap();
+    state.setting_stop_on_close = None;
+    state.login_start = Some(login_start);
+    state.stop_on_close_unconfirmed |= unconfirmed;
+    match result {
+        Ok(()) => {
+            state.stop_on_close = enabled;
+            if enabled {
+                state.stop_on_close_unconfirmed = false;
+            }
+        }
+        Err(e) => state
+            .messages
+            .push((format!("Could not change stop on close: {e}"), true)),
+    }
+}
+
+fn close_service(timeout: Duration) {
+    if !stop_on_close_enabled() {
+        return;
+    }
+    if let Ok(mut client) = connect_within(timeout) {
+        let _ = client.request(&Request::Shutdown);
+        // The next window must see a stopped service when it opens.
+        #[cfg(target_os = "macos")]
+        {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(2) && Client::connect().is_ok() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+pub fn stop_on_close_enabled() -> bool {
+    std::fs::read_to_string(config_dir().join("config.toml"))
+        .ok()
+        .and_then(|s| toml::from_str::<Settings>(&s).ok())
+        .is_some_and(|settings| settings.stop_on_close)
 }
 
 #[cfg(target_os = "linux")]
@@ -252,6 +400,107 @@ fn config_home() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
+}
+
+struct LoginFile {
+    path: std::path::PathBuf,
+    contents: Vec<u8>,
+    permissions: std::fs::Permissions,
+}
+
+impl LoginFile {
+    fn read(path: Option<std::path::PathBuf>) -> std::io::Result<Option<Self>> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        match std::fs::read(&path) {
+            Ok(contents) => Ok(Some(Self {
+                permissions: std::fs::metadata(&path)?.permissions(),
+                path,
+                contents,
+            })),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn disable(entry: Option<&Self>) -> std::io::Result<()> {
+        if let Some(entry) = entry {
+            std::fs::remove_file(&entry.path)?;
+        }
+        Ok(())
+    }
+
+    fn restore(entry: Option<&Self>) -> std::io::Result<()> {
+        use std::io::Write;
+
+        if let Some(entry) = entry {
+            match std::fs::File::create_new(&entry.path) {
+                Ok(mut file) => {
+                    file.write_all(&entry.contents)?;
+                    file.set_permissions(entry.permissions.clone())?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
+struct LoginStart {
+    window: Option<LoginFile>,
+    #[cfg(target_os = "macos")]
+    agent: Option<LoginFile>,
+    #[cfg(target_os = "linux")]
+    unit_enabled: bool,
+}
+
+impl LoginStart {
+    fn read() -> std::io::Result<Self> {
+        Ok(Self {
+            window: LoginFile::read(login_entry_path())?,
+            #[cfg(target_os = "macos")]
+            agent: LoginFile::read(crate::launchd::plist_path().ok())?,
+            #[cfg(target_os = "linux")]
+            unit_enabled: autostart_enabled(),
+        })
+    }
+
+    fn disable(&self) -> std::io::Result<()> {
+        LoginFile::disable(self.window.as_ref())?;
+        // Removing the plist lets the loaded launch agent finish normally.
+        #[cfg(target_os = "macos")]
+        LoginFile::disable(self.agent.as_ref())?;
+        #[cfg(target_os = "linux")]
+        if self.unit_enabled {
+            set_autostart(false, false)?;
+        }
+        Ok(())
+    }
+
+    fn restore(&self) -> std::io::Result<()> {
+        let window = LoginFile::restore(self.window.as_ref());
+        #[cfg(target_os = "macos")]
+        let service = LoginFile::restore(self.agent.as_ref());
+        #[cfg(target_os = "linux")]
+        let service = if self.unit_enabled && !autostart_enabled() {
+            // The existing unit may contain user edits and should keep its contents.
+            systemctl(&["enable", "otozane.service"])
+        } else {
+            Ok(())
+        };
+        window.and(service)
+    }
+
+    fn restore_after(&self, error: std::io::Error) -> std::io::Error {
+        match self.restore() {
+            Ok(()) => error,
+            Err(restore) => {
+                std::io::Error::other(format!("{error}. Could not restore login start: {restore}"))
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -356,10 +605,40 @@ pub fn set_autostart(on: bool, start_now: bool) -> std::io::Result<()> {
 /// to the current executable if present, else from `PATH`.
 #[cfg(target_os = "linux")]
 pub fn start_service() -> std::io::Result<()> {
-    use std::os::unix::process::CommandExt;
+    if resume_service()? {
+        return Ok(());
+    }
     if unit_path().is_some_and(|p| p.exists()) {
         return systemctl(&["start", "otozane.service"]);
     }
+    start_detached()
+}
+
+#[cfg(target_os = "linux")]
+fn resume_service() -> std::io::Result<bool> {
+    let Ok(mut client) = Client::connect() else {
+        return Ok(false);
+    };
+    match client.request(&Request::Start)? {
+        Response::Error { message } => Err(std::io::Error::other(message)),
+        _ => Ok(true),
+    }
+}
+
+pub fn start_window_service() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if resume_service()? {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    if Client::connect().is_ok() {
+        return Ok(());
+    }
+    start_detached()
+}
+
+pub(crate) fn start_detached() -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
     let local = local_service();
     let mut cmd = std::process::Command::new(
         local
@@ -371,7 +650,11 @@ pub fn start_service() -> std::io::Result<()> {
         .stderr(std::process::Stdio::null())
         // Own process group, so closing the UI's terminal does not stop audio.
         .process_group(0);
-    cmd.spawn().map(|_| ())
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

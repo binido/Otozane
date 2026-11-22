@@ -30,9 +30,16 @@ crate compiles to nothing on the other OS.
   virtual microphone) and tools that retarget streams through metadata
   (e.g. EasyEffects) cannot move it. The engine runs inside this stream's
   real-time process callback.
-- **Virtual microphone** is a `support.null-audio-sink` adapter created by the
-  service with `media.class = Audio/Source/Virtual` and `object.linger = false`,
-  so PipeWire removes it when the service exits or crashes.
+- **Virtual microphone** is a `support.null-audio-sink` adapter on its own
+  PipeWire connection with `media.class = Audio/Source/Virtual` and
+  `object.linger = false`. With stop on close enabled, `Shutdown` releases
+  the capture, playback, monitor and effect chain. The service keeps only the
+  node and IPC listener. `Start` rebuilds processing and links it to the same
+  node. Existing recording links stay attached and receive silence in between.
+  The node remains client-owned so PipeWire removes it on process exit or
+  crash. The holder checks once a second for removal of its executable so an
+  uninstall also releases the node. This keeps the node ID through option
+  changes and needs no persistent PipeWire configuration or session cleanup.
 - The capture stream requests `node.latency = 1024/48000`, so the graph
   quantum stays at or below one engine block (see Hush below).
 - **Output stream** is not autoconnected; the backend links its ports to the
@@ -227,6 +234,10 @@ error on its card.
 forwards requests; the render loop never blocks on IPC and never processes
 audio. Edits apply to a local copy immediately, and incoming status does not
 overwrite it for 500 ms after the last edit, so sliders stay responsive.
+**Stop processing when the window is closed** is stored in `config.toml`.
+It starts the service on window launch and sends `Shutdown` before exiting
+the UI process. It overrides both login-start settings. On macOS the service
+exits and the installed HAL driver continues to provide the input device.
 
 Styling is monochrome Material 3 (fixed palette, tonal surfaces, M3 controls), using
 bundled Roboto and a Lucide icon font subset. egui's default fonts stay as

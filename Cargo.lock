@@ -2813,9 +2813,11 @@ name = "otozane-plugins"
 version = "0.4.1"
 dependencies = [
  "cmake",
+ "libc",
  "libloading 0.8.9",
  "otozane-core",
  "serde_json",
+ "tempfile",
  "vst3",
 ]
 

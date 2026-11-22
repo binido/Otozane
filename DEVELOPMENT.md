@@ -30,13 +30,22 @@ Use a throwaway config directory so development never touches your real profiles
 
 ```sh
 XDG_CONFIG_HOME=/tmp/otozane-dev ./target/debug/otozaned
-./target/debug/otozane
+XDG_CONFIG_HOME=/tmp/otozane-dev ./target/debug/otozane
 ```
 
 Only one service can run per user (the socket is `$XDG_RUNTIME_DIR/otozane.sock`).
 To run a second, test service next to a real one, set `OTOZANE_SOCKET` (socket
 path, also used by the UI and `scripts/ipc.py`) and `OTOZANE_NODE_PREFIX`
 (prefix for its PipeWire node names). `scripts/e2e.sh` does both.
+
+For a stop-on-close check on Linux, use a private PipeWire and WirePlumber
+session and an isolated service socket. Send `{"cmd":"set_stop_on_close","enabled":true}`,
+then `{"cmd":"shutdown"}` and `{"cmd":"start"}` with `scripts/ipc.py`.
+Compare the microphone's `object.serial` in `pw-dump` before shutdown, while
+stopped, and after start. The capture and output streams disappear while
+stopped. A single `pw-record` should continue to record silence until processing
+resumes. On macOS use one `ffmpeg -f avfoundation -i ":Otozane Microphone"`
+recording through an IPC shutdown and a new service launch.
 
 ## Scripts
 
