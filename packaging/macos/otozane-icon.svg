@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<defs>
+<filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+<feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+<feOffset dy="10"/>
+<feComponentTransfer><feFuncA type="linear" slope="0.4"/></feComponentTransfer>
+</filter>
+</defs>
+<!-- macOS icon grid: 824 px body centred on the 1024 px canvas, then the artwork of ../otozane.svg (256 px) scaled to it. -->
+<g filter="url(#shadow)"><rect x="100" y="100" width="824" height="824" rx="180"/></g>
+<g transform="translate(100 100) scale(3.21875)">
+<rect width="256" height="256" rx="56" fill="#1c1c1c"/>
+<rect x="96" y="36" width="64" height="116" rx="32" fill="#fff"/>
+<path d="M88 102 C106 86 116 86 128 98 S150 110 168 94" fill="none" stroke="#1c1c1c" stroke-width="15"/>
+<path d="M74 122 A54 54 0 0 0 182 122 M128 176 V206 M98 210 H158" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="round"/>
+</g>
+</svg>

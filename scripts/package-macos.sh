@@ -41,11 +41,14 @@ install -m644 "$driver"/libASPL-LICENSE* "$app/Resources/licenses/"
 install -m644 "$root/third_party/ysfx/LICENSE" "$app/Resources/licenses/ysfx-LICENSE"
 install -m644 "$root/third_party/ysfx/thirdparty/WDL/LICENSE.txt" "$app/Resources/licenses/WDL-LICENSE"
 
-# Icon from the 256 px PNG, the largest bundled raster.
+# Icon from the 1024 px render of packaging/macos/otozane-icon.svg (macOS icon grid: 824 px body, margin, shadow).
+# Regenerate it with: rsvg-convert -w 1024 -h 1024 packaging/macos/otozane-icon.svg -o packaging/macos/otozane-icon.png
 icons="$work/otozane.iconset"
 mkdir "$icons"
-for s in 16 32 128 256; do
-  sips -z $s $s "$root/crates/otozane-ui/assets/otozane.png" --out "$icons/icon_${s}x${s}.png" >/dev/null
+src="$root/packaging/macos/otozane-icon.png"
+for s in 16 32 128 256 512; do
+  sips -z $s $s "$src" --out "$icons/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s * 2)) $((s * 2)) "$src" --out "$icons/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$icons" -o "$app/Resources/otozane.icns"
 
