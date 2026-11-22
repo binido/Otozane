@@ -517,36 +517,47 @@ fn eq_editor(ui: &mut Ui, id: u64, values: &[f32], changes: &mut Vec<(&'static s
     ui.add_space(6.0);
 
     let specs = EffectKind::Equalizer.params();
-    egui::Grid::new(("eq", id))
-        .num_columns(5)
-        .spacing([12.0, 6.0])
+    // Band number, type box, three value fields and the gaps take about 420 px,
+    // the sliders share the rest. Below that the grid scrolls sideways instead
+    // of widening the card past the others.
+    let slider_w = ((ui.available_width() - 420.0) / 3.0).clamp(60.0, 110.0);
+    egui::ScrollArea::horizontal()
+        .id_salt(("eq-scroll", id))
         .show(ui, |ui| {
-            for h in ["", "Type", "Frequency", "Gain", "Q"] {
-                ui.label(RichText::new(h).small().weak());
-            }
-            ui.end_row();
-            for (b, (band, vals)) in specs
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(values.as_chunks::<4>().0)
-                .enumerate()
-            {
-                ui.label(format!("{}", b + 1));
-                let on = vals[0].round() as i32 != 0;
-                let has_gain = matches!(vals[0].round() as i32, 1..=3);
-                for (k, (spec, &v)) in band.iter().zip(vals).enumerate() {
-                    let mut v = v;
-                    let enabled = k == 0 || (on && (k != 2 || has_gain));
-                    ui.add_enabled_ui(enabled, |ui| {
-                        ui.spacing_mut().slider_width = 110.0;
-                        if param(ui, spec, &mut v, id) {
-                            changes.push((spec.key, v));
+            egui::Grid::new(("eq", id))
+                .num_columns(5)
+                .spacing([12.0, 6.0])
+                .min_col_width(0.0)
+                .show(ui, |ui| {
+                    for h in ["", "Type", "Frequency", "Gain", "Q"] {
+                        ui.label(RichText::new(h).small().weak());
+                    }
+                    ui.end_row();
+                    for (b, (band, vals)) in specs
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(values.as_chunks::<4>().0)
+                        .enumerate()
+                    {
+                        ui.label(format!("{}", b + 1));
+                        let on = vals[0].round() as i32 != 0;
+                        let has_gain = matches!(vals[0].round() as i32, 1..=3);
+                        for (k, (spec, &v)) in band.iter().zip(vals).enumerate() {
+                            let mut v = v;
+                            let enabled = k == 0 || (on && (k != 2 || has_gain));
+                            ui.add_enabled_ui(enabled, |ui| {
+                                ui.spacing_mut().slider_width = slider_w;
+                                // Same width for every band, "Peak" and "High shelf" alike.
+                                ui.spacing_mut().combo_width = 116.0;
+                                if param(ui, spec, &mut v, id) {
+                                    changes.push((spec.key, v));
+                                }
+                            });
                         }
-                    });
-                }
-                ui.end_row();
-            }
+                        ui.end_row();
+                    }
+                });
         });
 }
 
