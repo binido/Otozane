@@ -362,20 +362,25 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
         egui::ScrollArea::vertical()
             .max_height(320.0)
             .show(ui, |ui| {
-                for info in matches {
+                for (k, info) in matches.into_iter().enumerate() {
+                    if k > 0 {
+                        ui.separator();
+                    }
+                    // Vendor and category are often empty, VST3 joins subcategories with "|".
+                    let category = info.category.replace('|', ", ");
+                    let details = [
+                        info.plugin.vendor.as_str(),
+                        info.plugin.format.name(),
+                        &category,
+                    ]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" \u{b7} ");
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(&info.plugin.name);
-                            let metadata = [
-                                info.plugin.vendor.as_str(),
-                                info.plugin.format.name(),
-                                info.category.as_str(),
-                            ]
-                            .into_iter()
-                            .filter(|part| !part.is_empty())
-                            .collect::<Vec<_>>()
-                            .join(" \u{b7} ");
-                            ui.label(RichText::new(metadata).small().weak());
+                            ui.label(RichText::new(details).small().weak());
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button(icon_text(icons::PLUS, "Add")).clicked() {
@@ -383,7 +388,6 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
                             }
                         });
                     });
-                    ui.separator();
                 }
             });
         if !app.plugins.errors.is_empty() {
