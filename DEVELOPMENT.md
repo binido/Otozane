@@ -30,7 +30,7 @@ Use a throwaway config directory so development never touches your real profiles
 
 ```sh
 XDG_CONFIG_HOME=/tmp/otozane-dev ./target/debug/otozaned
-./target/debug/otozane
+XDG_CONFIG_HOME=/tmp/otozane-dev ./target/debug/otozane
 ```
 
 Only one service can run per user (the socket is `$XDG_RUNTIME_DIR/otozane.sock`).
