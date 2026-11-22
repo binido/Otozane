@@ -69,21 +69,24 @@ fn options() -> eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Otozane")
             .with_app_id("otozane")
-            .with_icon(icon())
             .with_inner_size([980.0, 680.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
     options.viewport = if cfg!(target_os = "macos") {
+        // An empty icon makes eframe leave the bundle icon (otozane.icns, drawn on the macOS icon
+        // grid) alone. Without one it would set its own egui icon, and with `icon()` a full-bleed
+        // image that grows the Dock icon while the app runs.
         // System frame for rounded corners and the traffic lights, content under the hidden title bar.
         options
             .viewport
+            .with_icon(egui::IconData::default())
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false)
     } else {
         // Title bar and window buttons are drawn by the app (see chrome.rs).
-        options.viewport.with_decorations(false)
+        options.viewport.with_icon(icon()).with_decorations(false)
     };
     // Screenshots get a fixed size; tiling compositors (niri) float such windows.
     // OTOZANE_SCREENSHOT_SIZE=WxH overrides it, e.g. to check the minimum width.
