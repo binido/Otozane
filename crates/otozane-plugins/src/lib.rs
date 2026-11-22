@@ -73,8 +73,6 @@ pub fn scan_dirs(
     cancelled: impl Fn() -> bool,
 ) -> Option<PluginList> {
     use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-    const TIMEOUT: Duration = Duration::from_secs(20);
     let mut list = PluginList {
         dirs: dirs.iter().map(|d| d.display().to_string()).collect(),
         ..Default::default()
@@ -101,38 +99,26 @@ pub fn scan_dirs(
                 continue;
             }
         };
-        // Read stdout on a thread so a large listing cannot block the child.
-        let mut out = child.stdout.take().expect("piped");
-        let reader = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = std::io::Read::read_to_string(&mut out, &mut s);
-            s
-        });
-        let start = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(s)) => break Some(s),
-                Ok(None) if start.elapsed() < TIMEOUT && !cancelled() => {
-                    std::thread::sleep(Duration::from_millis(20))
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-            }
-        };
-        let stdout = reader.join().unwrap_or_default();
-        match status {
-            None => list.errors.push((name, "timed out while loading".into())),
-            Some(s) if !s.success() => {
+        let outcome = read_scanner_output(&mut child, &cancelled);
+        if !matches!(outcome, Ok(Some(_))) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if cancelled() {
+            return None;
+        }
+        match outcome {
+            Err(e) => list.errors.push((name, format!("scanner output: {e}"))),
+            Ok(None) => list.errors.push((name, "timed out while loading".into())),
+            Ok(Some((s, stdout))) if !s.success() => {
+                let stdout = String::from_utf8_lossy(&stdout);
                 let why = stdout
                     .trim()
                     .strip_prefix("error: ")
                     .unwrap_or("crashed while loading");
                 list.errors.push((name, format!("{why} ({s})")));
             }
-            Some(_) => match serde_json::from_str::<Vec<PluginInfo>>(&stdout) {
+            Ok(Some((_, stdout))) => match serde_json::from_slice::<Vec<PluginInfo>>(&stdout) {
                 Ok(v) => list.plugins.extend(v),
                 Err(e) => list
                     .errors
@@ -160,6 +146,54 @@ pub fn scan_dirs(
     (!cancelled()).then_some(list)
 }
 
+fn read_scanner_output(
+    child: &mut std::process::Child,
+    cancelled: impl Fn() -> bool,
+) -> std::io::Result<Option<(std::process::ExitStatus, Vec<u8>)>> {
+    use std::io::{Error, ErrorKind, Read};
+    use std::os::fd::AsRawFd;
+    use std::time::{Duration, Instant};
+
+    let mut stdout = child.stdout.take().expect("piped");
+    // SAFETY: stdout owns the descriptor for both calls.
+    let flags = unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL) };
+    if flags == -1
+        || unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+    {
+        return Err(Error::last_os_error());
+    }
+
+    let limit = Instant::now() + Duration::from_secs(20);
+    let mut drain_limit = None;
+    let mut output = Vec::new();
+    let mut buffer = [0; 8192];
+    while !cancelled() {
+        let status = child.try_wait()?;
+        if status.is_some() {
+            drain_limit.get_or_insert_with(|| Instant::now() + Duration::from_millis(250));
+        }
+        if Instant::now() >= drain_limit.unwrap_or(limit) {
+            return Ok(None);
+        }
+        match stdout.read(&mut buffer) {
+            Ok(0) => {}
+            Ok(n) => {
+                output.extend_from_slice(&buffer[..n]);
+                continue;
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+        // Once the scanner exits, a descendant holding stdout open cannot delay the result.
+        if let Some(status) = status {
+            return Ok(Some((status, output)));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(None)
+}
+
 /// Standard plugin directories plus `extra`.
 pub fn search_dirs(extra: &[String]) -> Vec<std::path::PathBuf> {
     let mut v = vst3::default_dirs();
@@ -171,6 +205,36 @@ pub fn search_dirs(extra: &[String]) -> Vec<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn scanner_finishes_while_descendant_keeps_stdout_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut scanner = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 6 & echo $! > pid; printf '%131072s[]' ''")
+            .current_dir(dir.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let result = super::read_scanner_output(&mut scanner, || false);
+        let elapsed = start.elapsed();
+        let pid: libc::pid_t = std::fs::read_to_string(dir.path().join("pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // SAFETY: the PID belongs to the sleep process started by this test.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        let (status, output) = result.unwrap().unwrap();
+        assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+        assert!(status.success());
+        assert_eq!(output.len(), 131_074);
+        assert!(output.ends_with(b"[]"));
+    }
+
     #[test]
     fn state_hex_round_trip() {
         let b = vec![0u8, 1, 0xab, 0xff];
