@@ -3,14 +3,46 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
-## Unreleased
+## 0.5.0 - 2026-11-22
 
 ### New
 
 - **Stop processing when the window is closed** in **Settings → Background**.
   Otozane starts processing when you open it and exits the interface when you
-  close it. Apps keep **Otozane Microphone** selected and receive silence
-  until you reopen Otozane. The option is off by default and disables login start.
+  close it, so nothing processes audio in the background on a laptop or a
+  low-power PC. Apps keep **Otozane Microphone** selected and receive silence
+  until you reopen Otozane. The option is off by default and disables login
+  start. On Linux a small idle process keeps the microphone so it does not
+  disappear.
+
+### Fixed
+
+- **macOS:** switching between Mono and Stereo no longer restarts the
+  microphone stream. The silence at the switch went from about 200 ms down to
+  about 15 ms.
+- **macOS:** the Dock icon has the same size as other apps' icons, whether
+  Otozane is running or not.
+- Interface polish:
+  - The plugin search field no longer runs under **Rescan**.
+  - Segmented controls (**Theme**, **Format**) have equal segments and thin
+    dividers.
+  - The plugin browser shows no stray dots for scripts without an author or
+    tags.
+  - No empty strip under an effect card with a load error.
+  - The Equalizer card is as wide as the other cards, and profile actions
+    line up.
+  - In narrow windows, the mode switch, row descriptions and the **Bypassed**
+    badge no longer overlap other controls.
+- Stopping the service during a plugin scan no longer waits for processes
+  started by a plugin.
+- Building from source on ARM Linux no longer fails in the VST3 hosting code.
+
+### Other
+
+- Development scripts respect `CARGO_TARGET_DIR`. `OTOZANE_SCREENSHOT_SIZE`
+  sets the window size for UI screenshots.
+
+**Full diff**: https://github.com/binido/Otozane/compare/v0.4.1...v0.5.0
 
 ## 0.4.1 - 2026-11-22
 
@@ -28,10 +60,8 @@ for the tagged version as the GitHub release notes and fails if it is missing.
     MIDI is not passed to scripts.
 - **Mono or Stereo without a restart.** Switch the format in **Settings →
   Audio → Format**, the audio service applies it right away. Apps recording
-  from Otozane Microphone keep recording. The capture stream stays open on
-  macOS and briefly restarts on Linux. Effects and plugins keep their settings
-  when rebuilt for the new format. Audio can briefly go quiet while their
-  latency buffers refill.
+  from Otozane Microphone keep recording, with a short silence at the switch.
+  Effects and plugins are rebuilt for the new format and keep their settings.
 - `set_channels` IPC request (`{"cmd":"set_channels","channels":2}`).
 - **The tray and menu bar icon shows the state.** It is crossed out when
   Muted, on an audio error or when the service is stopped, and dimmed when
