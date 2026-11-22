@@ -178,6 +178,25 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
         {
             let n = options.len();
             let mut rects = Vec::new();
+            // Equal segments, wide enough for any label with the check mark.
+            // Otherwise the group changes width and shifts as the selection moves.
+            let pad = ui.spacing().button_padding.x;
+            let seg_w = options
+                .iter()
+                .map(|&(_, label)| {
+                    egui::WidgetText::from(checked_label(label))
+                        .into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Extend),
+                            f32::INFINITY,
+                            egui::TextStyle::Button,
+                        )
+                        .size()
+                        .x
+                        + 2.0 * pad
+                })
+                .fold(96.0, f32::max)
+                .ceil();
             // In a right-to-left row add the last option first, so the
             // segments still read left to right.
             let mut order: Vec<usize> = (0..n).collect();
@@ -188,7 +207,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
                 let (v, label) = options[k];
                 let on = *value == v;
                 let text = if on {
-                    medium(format!("{}  {label}", crate::icons::CHECK))
+                    checked_label(label)
                 } else {
                     RichText::new(label)
                 };
@@ -207,7 +226,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
                     })
                     .frame_when_inactive(on)
                     .corner_radius(radius)
-                    .min_size(Vec2::new(96.0, 40.0));
+                    .min_size(Vec2::new(seg_w, 40.0));
                 let resp = ui.add(b);
                 if resp.clicked() && !on {
                     *value = v;
@@ -221,12 +240,21 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
             let s = Stroke::new(1.0, p.outline);
             ui.painter()
                 .rect_stroke(all, 20.0, s, egui::StrokeKind::Inside);
+            // Dividers on a pixel center and inside the outline, so they stay
+            // as thin as the outline and do not cross it.
+            let y = all.y_range().shrink(s.width);
             for r in &rects[1..] {
-                ui.painter().vline(r.left(), r.y_range(), s);
+                let x = ui.painter().round_to_pixel_center(r.left());
+                ui.painter().vline(x, y, s);
             }
         }
     });
     changed
+}
+
+/// Selected segment label: check mark, then the label in medium weight.
+fn checked_label(label: &str) -> RichText {
+    medium(format!("{}  {label}", crate::icons::CHECK))
 }
 
 /// M3 switch: outlined track with a small thumb when off, filled track with
