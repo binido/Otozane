@@ -3,7 +3,7 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
-## Unreleased
+## 0.4.1 - 2026-11-22
 
 ### New
 
@@ -23,6 +23,25 @@ for the tagged version as the GitHub release notes and fails if it is missing.
   milliseconds at the switch. Effects and plugins are rebuilt for the new
   format and keep their settings.
 - `set_channels` IPC request (`{"cmd":"set_channels","channels":2}`).
+- **The tray and menu bar icon shows the state.** It is crossed out when
+  Muted, on an audio error or when the service is stopped, and dimmed when
+  effects are bypassed (**No effects**).
+
+### Fixed
+
+- The Linux tray showed the full app icon with its dark background. Linux and
+  macOS now share one monochrome icon that the panel recolours to match its
+  theme, and it stays visible on light panels.
+- In **Settings**, labels of rows without a description (such as **Theme**)
+  are centred vertically.
+
+### Other
+
+- Building from source now needs `cmake` and `scripts/fetch-ysfx.sh` for JSFX
+  support. Without the ysfx sources Otozane builds without JSFX. See
+  [DEVELOPMENT.md](DEVELOPMENT.md).
+
+**Full diff**: https://github.com/binido/Otozane/compare/v0.4.0...v0.4.1
 
 ## 0.4.0 - 2026-11-14
 
