@@ -525,8 +525,16 @@ impl App {
                     .min_size(egui::vec2(0.0, 32.0)),
             )
         };
+        // As tall as a chip, so an arrow that wraps to a new line stays centered on it.
         let arrow = |ui: &mut Ui| {
-            ui.label(icon(icons::ARROW_RIGHT, 14.0).color(p.text_weak));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 32.0), egui::Sense::hover());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icons::ARROW_RIGHT,
+                egui::FontId::proportional(14.0),
+                p.text_weak,
+            );
         };
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
