@@ -38,3 +38,28 @@ fn jsfx_gain_changes_the_signal_and_restores_state() {
     again.processor.process(&mut [&mut m], &values);
     assert!((m[0] - 0.0005).abs() < 1e-5, "{}", m[0]);
 }
+
+#[test]
+fn jsfx_sparse_sliders_num_ch_and_step_rounding() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/sparse.jsfx");
+    let plugin = match jsfx::scan(&script) {
+        Err(e) if e.contains("without JSFX") => return eprintln!("skipped: {e}"),
+        r => r.unwrap().0,
+    };
+    let mut inst = instantiate(&plugin, None, 48000.0, 2, 1024).unwrap();
+    // 0..10 in steps of 6 must not round up to 12.
+    assert_eq!(inst.control.value_text(0, 1.0), "10.00");
+
+    // @slider ran with num_ch = 2 before the first block: gain 2 * 1.
+    let mut values = inst.values.clone();
+    let (mut l, mut r) = (vec![0.5f32; 64], vec![0.5f32; 64]);
+    inst.processor.process(&mut [&mut l, &mut r], &values);
+    assert_eq!(l[0], 1.0, "num_ch was 0 in the first @slider");
+
+    values[1] = 0.75; // slider64 = 3
+    inst.processor.process(&mut [&mut l, &mut r], &values);
+    let state = inst.control.save_state().unwrap();
+    drop(inst);
+    let again = instantiate(&plugin, Some(&state), 48000.0, 2, 1024).unwrap();
+    assert_eq!(again.values[1], 0.75, "slider64 lost in the saved state");
+}

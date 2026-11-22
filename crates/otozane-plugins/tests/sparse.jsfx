@@ -1,0 +1,11 @@
+desc:Test Sparse
+author:Otozane
+slider2:0<0,10,6>Rounded
+slider64:1<0,4,1>Scale
+
+@slider
+g = num_ch * slider64;
+
+@sample
+spl0 *= g;
+spl1 *= g;
