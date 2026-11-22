@@ -81,8 +81,9 @@ crate compiles to nothing on the other OS.
   dropped and recreated when the device is back. Transport type (virtual,
   aggregate) is read from Core Audio directly, "Automatic" skips those.
 - **Capture** opens the device at its default rate and channel count, takes the
-  first one or two channels and resamples to 48 kHz with a linear interpolator
-  in the input callback, in steps of 1024 input frames into a preallocated buffer.
+  first two channels (duplicates a mono input) and resamples to 48 kHz with a
+  linear interpolator in steps of 1024 input frames. The engine selects the
+  left channel for a mono chain. Switching the chain format keeps the stream open.
 - **Monitor** plays the monitor ring to the system default output at that
   device's rate, resampled the same way, with the same stale-audio rule. It is
   recreated when the default output changes and skipped while the default

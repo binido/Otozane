@@ -363,16 +363,16 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(&info.plugin.name);
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} \u{b7} {} \u{b7} {}",
-                                    info.plugin.vendor,
-                                    info.plugin.format.name(),
-                                    info.category
-                                ))
-                                .small()
-                                .weak(),
-                            );
+                            let metadata = [
+                                info.plugin.vendor.as_str(),
+                                info.plugin.format.name(),
+                                info.category.as_str(),
+                            ]
+                            .into_iter()
+                            .filter(|part| !part.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" \u{b7} ");
+                            ui.label(RichText::new(metadata).small().weak());
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button(icon_text(icons::PLUS, "Add")).clicked() {

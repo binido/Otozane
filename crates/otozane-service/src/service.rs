@@ -106,7 +106,7 @@ impl Service {
         self.build_chain(chain, self.settings.channels as usize)
     }
 
-    /// Rebuilds the chain for a new channel count and recreates the capture stream.
+    /// Rebuilds the chain for a new channel count.
     fn set_channels(&mut self, channels: u32) -> Result<(), String> {
         if !(1..=2).contains(&channels) {
             return Err("channels must be 1 or 2".into());
@@ -118,6 +118,7 @@ impl Service {
         // A failed save would lose the plugin's recent changes, so nothing is switched.
         self.capture_plugin_states()?;
         self.build_chain(self.chain.clone(), channels as usize)?;
+        #[cfg(target_os = "linux")]
         self.backend.set_channels(channels as usize);
         self.settings.channels = channels;
         self.dirty_settings = true;

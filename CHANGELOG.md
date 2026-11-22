@@ -19,9 +19,10 @@ for the tagged version as the GitHub release notes and fails if it is missing.
     MIDI is not passed to scripts.
 - **Mono or Stereo without a restart.** Switch the format in **Settings →
   Audio → Format**, the audio service applies it right away. Apps recording
-  from Otozane Microphone keep recording, with a short silence of a few tens of
-  milliseconds at the switch. Effects and plugins are rebuilt for the new
-  format and keep their settings.
+  from Otozane Microphone keep recording. The capture stream stays open on
+  macOS and briefly restarts on Linux. Effects and plugins keep their settings
+  when rebuilt for the new format. Audio can briefly go quiet while their
+  latency buffers refill.
 - `set_channels` IPC request (`{"cmd":"set_channels","channels":2}`).
 - **The tray and menu bar icon shows the state.** It is crossed out when
   Muted, on an audio error or when the service is stopped, and dimmed when

@@ -6,7 +6,7 @@
 # The service runs with an isolated config directory and socket under $OUT.
 set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
-BIN=$(realpath "${BIN:-$DIR/../target/debug/otozaned}")
+BIN=$(realpath "${BIN:-${CARGO_TARGET_DIR:-$DIR/../target}/debug/otozaned}")
 OUT=${OUT:-${TMPDIR:-/tmp}/otozane-e2e}
 mkdir -p "$OUT" && cd "$OUT" || exit 1
 # Relative socket path, unix socket paths are limited to 104 bytes.
