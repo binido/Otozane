@@ -3,6 +3,15 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
+## Unreleased
+
+### New
+
+- **Stop processing when the window is closed** in **Settings → Background**.
+  Otozane starts processing when you open it and exits the interface when you
+  close it. Apps keep **Otozane Microphone** selected and receive silence
+  until you reopen Otozane. The option is off by default and disables login start.
+
 ## 0.4.1 - 2026-11-22
 
 ### New
