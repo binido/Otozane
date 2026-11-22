@@ -20,6 +20,7 @@ pub struct Tray {
     state: &'static str,
     /// `None` while the service is not reachable.
     mode: Option<Mode>,
+    theme_path: String,
 }
 
 impl Tray {
@@ -40,11 +41,20 @@ impl ksni::Tray for Tray {
     fn title(&self) -> String {
         "Otozane".into()
     }
+    fn icon_theme_path(&self) -> String {
+        self.theme_path.clone()
+    }
+    /// Symbolic, so the host recolours it for its panel.
+    fn icon_name(&self) -> String {
+        "otozane-symbolic".into()
+    }
+    /// White fallback for hosts that do not find the symbolic icon.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let icon = crate::icon();
+        let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/tray.png"))
+            .expect("bundled tray icon is a valid PNG");
         let mut data = icon.rgba;
         for px in data.as_chunks_mut::<4>().0 {
-            px.rotate_right(1); // RGBA to ARGB
+            *px = [px[3], 255, 255, 255]; // white ARGB
         }
         vec![ksni::Icon {
             width: icon.width as i32,
@@ -136,6 +146,7 @@ pub fn spawn(tx: Sender<Cmd>, wait: bool) -> Option<Handle<Tray>> {
         window: None,
         state: "Connecting",
         mode: None,
+        theme_path: install_icon(),
     };
     let handle = match tray.assume_sni_available(wait).spawn() {
         Ok(h) => h,
@@ -157,6 +168,30 @@ pub fn spawn(tx: Sender<Cmd>, wait: bool) -> Option<Handle<Tray>> {
         }
     });
     Some(handle)
+}
+
+/// Writes the symbolic icon into an icon theme under the cache dir and
+/// returns that theme path, empty when it cannot be written.
+fn install_icon() -> String {
+    use std::path::PathBuf;
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    let Some(root) = cache.map(|c| c.join("otozane/icons")) else {
+        return String::new();
+    };
+    let dir = root.join("hicolor/scalable/apps");
+    let svg = include_bytes!("../../../packaging/tray.svg");
+    match std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("otozane-symbolic.svg"), svg))
+    {
+        Ok(()) => root.to_string_lossy().into_owned(),
+        Err(e) => {
+            eprintln!("tray icon: {e}");
+            String::new()
+        }
+    }
 }
 
 fn state(client: &mut Option<Client>) -> (&'static str, Option<Mode>) {
