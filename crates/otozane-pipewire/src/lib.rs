@@ -87,8 +87,19 @@ struct RtState {
 
 type SharedSender = Arc<Mutex<Option<pw::channel::Sender<Command>>>>;
 
+/// Settings requested through `Backend`. Commands to a disconnected thread are
+/// lost, so each new connection starts from these values.
+#[derive(Clone)]
+struct Desired {
+    input: Option<String>,
+    muted: bool,
+    monitoring: bool,
+    channels: usize,
+}
+
 pub struct Backend {
     tx: SharedSender,
+    desired: Arc<Mutex<Desired>>,
     thread: Option<JoinHandle<()>>,
     pub status: Arc<Mutex<Status>>,
     pub counters: Arc<Counters>,
@@ -115,26 +126,23 @@ impl Backend {
             status: status.clone(),
             counters: counters.clone(),
         };
-        let tx2 = tx.clone();
+        let desired = Arc::new(Mutex::new(Desired {
+            input,
+            muted: false,
+            monitoring: false,
+            channels,
+        }));
+        let (tx2, desired2) = (tx.clone(), desired.clone());
         let thread = std::thread::Builder::new()
             .name("otozane-pipewire".into())
             .spawn(move || {
                 pw::init();
-                let mut input = input;
-                let mut muted = false;
-                let mut monitoring = false;
-                let mut channels = channels;
                 loop {
                     let (sender, rx) = pw::channel::channel();
                     *tx2.lock().unwrap() = Some(sender);
-                    match run(
-                        &shared,
-                        rx,
-                        &mut input,
-                        &mut muted,
-                        &mut monitoring,
-                        &mut channels,
-                    ) {
+                    // Read after the sender is installed: later changes arrive as commands.
+                    let desired = desired2.lock().unwrap().clone();
+                    match run(&shared, rx, desired) {
                         Ok(true) => return,
                         Ok(false) => {}
                         Err(e) => shared.set_capture(CaptureState::Error(e.to_string())),
@@ -147,6 +155,7 @@ impl Backend {
             .expect("failed to spawn PipeWire thread");
         Self {
             tx,
+            desired,
             thread: Some(thread),
             status,
             counters,
@@ -155,23 +164,27 @@ impl Backend {
 
     /// Switches the captured microphone. Takes effect asynchronously.
     pub fn set_input(&self, input: Option<String>) {
+        self.desired.lock().unwrap().input = input.clone();
         self.send(Command::SetInput(input));
     }
 
     /// Stops or resumes capture. While muted the virtual microphone stays
     /// present and outputs silence. Takes effect asynchronously.
     pub fn set_muted(&self, muted: bool) {
+        self.desired.lock().unwrap().muted = muted;
         self.send(Command::SetMuted(muted));
     }
 
     /// Plays the processed microphone to the system default output.
     /// Takes effect asynchronously.
     pub fn set_monitor(&self, on: bool) {
+        self.desired.lock().unwrap().monitoring = on;
         self.send(Command::SetMonitor(on));
     }
 
     /// Recreates the capture stream with `channels` channels. Takes effect asynchronously.
     pub fn set_channels(&self, channels: usize) {
+        self.desired.lock().unwrap().channels = channels;
         self.send(Command::SetChannels(channels));
     }
 
@@ -371,10 +384,7 @@ impl Main {
 fn run(
     shared: &Shared,
     rx: pw::channel::Receiver<Command>,
-    input: &mut Option<String>,
-    muted: &mut bool,
-    monitoring: &mut bool,
-    channels: &mut usize,
+    desired: Desired,
 ) -> Result<bool, pw::Error> {
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(
@@ -400,15 +410,15 @@ fn run(
     let state = Rc::new(RefCell::new(Main {
         core: core.clone(),
         shared: shared.clone(),
-        desired: input.clone(),
-        muted: *muted,
-        channels: *channels,
+        desired: desired.input,
+        muted: desired.muted,
+        channels: desired.channels,
         devices: Vec::new(),
         default_source: None,
         last_physical_default: None,
         _metadata: None,
         capture: None,
-        monitoring: *monitoring,
+        monitoring: desired.monitoring,
         monitor: None,
         output_node: None,
         virtual_node: None,
@@ -572,10 +582,6 @@ fn run(
     mainloop.run();
 
     let mut st = state.borrow_mut();
-    *input = st.desired.clone();
-    *muted = st.muted;
-    *monitoring = st.monitoring;
-    *channels = st.channels;
     st.capture = None;
     st.monitor = None;
     shared.monitor_on.store(false, Ordering::Relaxed);

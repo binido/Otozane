@@ -8,7 +8,8 @@ for the tagged version as the GitHub release notes and fails if it is missing.
 ### New
 
 - **JSFX plugins.** Effects written in REAPER's JSFX language now load like
-  VST3 plugins. Put the scripts in `~/.config/REAPER/Effects` (or any folder
+  VST3 plugins. Put the scripts in `~/.config/REAPER/Effects` (on macOS
+  `~/Library/Application Support/REAPER/Effects`, or any folder
   added to the plugin directories), press **Rescan**, and pick them in the
   plugin browser, marked JSFX.
   - Sliders appear as parameters and are saved in the profile together with

@@ -66,7 +66,7 @@ impl Service {
 
     pub fn flush(&mut self) {
         if self.dirty_profile {
-            self.capture_plugin_states();
+            let _ = self.capture_plugin_states();
             let p = Profile {
                 chain: self.chain.clone(),
             };
@@ -84,15 +84,22 @@ impl Service {
     }
 
     /// Copies each plugin's current state into the chain configuration.
-    fn capture_plugin_states(&mut self) {
+    /// Returns the first failure; a failed plugin keeps its previous state.
+    fn capture_plugin_states(&mut self) -> Result<(), String> {
+        let mut result = Ok(());
         for e in &mut self.chain {
             if let Some(c) = self.plugins.get(&e.id) {
                 match c.save_state() {
                     Ok(b) => e.state = Some(otozane_plugins::encode_state(&b)),
-                    Err(err) => eprintln!("{}: {err}", e.display_name()),
+                    Err(err) => {
+                        let msg = format!("{}: {err}", e.display_name());
+                        eprintln!("{msg}");
+                        result = result.and(Err(msg));
+                    }
                 }
             }
         }
+        result
     }
 
     pub fn apply_chain(&mut self, chain: Vec<EffectConfig>) -> Result<(), String> {
@@ -108,7 +115,8 @@ impl Service {
             return Ok(());
         }
         // Plugins are recreated from the state saved into the chain.
-        self.capture_plugin_states();
+        // A failed save would lose the plugin's recent changes, so nothing is switched.
+        self.capture_plugin_states()?;
         self.build_chain(self.chain.clone(), channels as usize)?;
         self.backend.set_channels(channels as usize);
         self.settings.channels = channels;
@@ -302,7 +310,7 @@ impl Service {
             }
             Request::GetProfile { name } => {
                 let profile = if name == self.settings.active_profile {
-                    self.capture_plugin_states();
+                    let _ = self.capture_plugin_states();
                     Ok(Profile {
                         chain: self.chain.clone(),
                     })

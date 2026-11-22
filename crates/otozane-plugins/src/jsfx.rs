@@ -34,10 +34,12 @@ pub fn find_scripts(dir: &Path) -> Vec<PathBuf> {
                 if depth < 4 && p.extension().is_none_or(|x| x != "vst3") {
                     walk(&p, depth + 1, out);
                 }
-            } else if match p.extension() {
-                Some(x) => x == "jsfx",
-                None => ft.len() < 1 << 20 && has_desc(&p),
-            } {
+            } else if ft.is_file()
+                && match p.extension() {
+                    Some(x) => x == "jsfx",
+                    None => ft.len() < 1 << 20 && has_desc(&p),
+                }
+            {
                 out.push(p);
             }
         }
@@ -284,7 +286,9 @@ mod imp {
         fn real(&self, v: f32) -> f64 {
             let x = self.min + v.clamp(0.0, 1.0) as f64 * (self.max - self.min);
             if self.inc > 0.0 {
-                self.min + ((x - self.min) / self.inc).round() * self.inc
+                let x = self.min + ((x - self.min) / self.inc).round() * self.inc;
+                // A range that is not a multiple of the step rounds past the end.
+                x.clamp(self.min.min(self.max), self.min.max(self.max))
             } else {
                 x
             }
@@ -416,8 +420,23 @@ mod imp {
                 };
                 ffi::ysfx_load_state(fx.0, &mut s);
             }
-            // An empty block runs @slider, where scripts usually set pdc_delay.
-            ffi::ysfx_process_float(fx.0, std::ptr::null(), std::ptr::null(), 0, 0, 0);
+            // An empty block runs @slider, where scripts usually set pdc_delay. It gets
+            // the channel count of the audio path, because @slider may read num_ch.
+            let k = if channels == 1 && ins >= 2 {
+                2
+            } else {
+                channels.min(2)
+            } as u32;
+            let mut zero = [0.0f32; 1];
+            let ptrs = [zero.as_mut_ptr(); 2];
+            ffi::ysfx_process_float(
+                fx.0,
+                ptrs.as_ptr() as *const *const f32,
+                ptrs.as_ptr(),
+                k,
+                k,
+                0,
+            );
         }
         // The bypass path allocates a delay of this length; ignore absurd values.
         let latency = (unsafe { ffi::ysfx_get_pdc_delay(fx.0) } as usize).min(sample_rate as usize);
@@ -477,7 +496,23 @@ mod imp {
             if s.is_null() {
                 return Err("plugin could not save its state".into());
             }
-            let out = encode(unsafe { &*s });
+            // ysfx counts the sliders but saves only those among the first `count`
+            // indices, so a sparse script like slider1 + slider64 would lose slider64.
+            let mut sliders: Vec<ffi::ysfx_state_slider_t> = (0..ffi::MAX_SLIDERS)
+                .filter(|&i| unsafe { ffi::ysfx_slider_exists(fx.0, i) })
+                .map(|i| ffi::ysfx_state_slider_t {
+                    index: i,
+                    value: unsafe { ffi::ysfx_slider_get_value(fx.0, i) },
+                })
+                .collect();
+            let out = unsafe {
+                encode(&ffi::ysfx_state_t {
+                    sliders: sliders.as_mut_ptr(),
+                    slider_count: sliders.len() as u32,
+                    data: (*s).data,
+                    data_size: (*s).data_size,
+                })
+            };
             unsafe { ffi::ysfx_state_free(s) };
             Ok(out)
         }

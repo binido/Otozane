@@ -270,7 +270,8 @@ fallbacks for scripts Roboto lacks.
 JSFX scripts run through ysfx (`src/jsfx.rs`), built from `third_party/ysfx`
 by `build.rs` as a static library with graphics off.
 
-- **Scanning** walks `~/.config/REAPER/Effects` and the other plugin
+- **Scanning** walks `~/.config/REAPER/Effects` (on macOS
+  `~/Library/Application Support/REAPER/Effects`) and the other plugin
   directories (four levels deep, skipping `.vst3` bundles) for `*.jsfx` and
   extensionless files with a `desc:` line. Scripts are only parsed (imports
   ignored), so this happens in the scanning thread, not in helper processes.
