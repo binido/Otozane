@@ -67,6 +67,7 @@ pub struct State {
     pub plugins: PluginList,
     pub stop_on_close: bool,
     pub setting_stop_on_close: Option<bool>,
+    pub stop_on_close_unconfirmed: bool,
     pub login_start: Option<(bool, bool)>,
     /// Messages for the user, newest last (`true` = error). Drained by the UI.
     pub messages: Vec<(String, bool)>,
@@ -94,6 +95,7 @@ impl ServiceClient {
             plugins: PluginList::default(),
             stop_on_close,
             setting_stop_on_close: None,
+            stop_on_close_unconfirmed: false,
             login_start: None,
             messages: Vec::new(),
         }));
@@ -244,6 +246,9 @@ fn session(
         match resp {
             Response::Status(st) => {
                 s.stop_on_close = st.stop_on_close;
+                if st.stop_on_close {
+                    s.stop_on_close_unconfirmed = false;
+                }
                 s.status = Some(*st);
             }
             Response::Profiles { names } => s.profiles = names,
@@ -305,37 +310,49 @@ fn connect_within(timeout: Duration) -> std::io::Result<Client> {
 }
 
 fn apply_stop_on_close(state: &Mutex<State>, enabled: bool) {
+    let mut unconfirmed = false;
     let result = (|| {
         start_window_service()?;
         let mut client = connect_within(Duration::from_secs(4))?;
-        let mut update = |()| match client.request(&Request::SetStopOnClose { enabled }) {
+        let login = enabled.then(LoginStart::read).transpose()?;
+        if let Some(login) = &login {
+            login.disable().map_err(|e| login.restore_after(e))?;
+        }
+        match client.request(&Request::SetStopOnClose { enabled }) {
             Ok(Response::Ok) => Ok(()),
-            Ok(Response::Error { message }) => Err(std::io::Error::other(message)),
-            Ok(_) => Err(std::io::Error::other("Audio service stopped")),
-            // The service may have saved the setting before the connection closed.
+            Ok(response) => {
+                let error = match response {
+                    Response::Error { message } => std::io::Error::other(message),
+                    _ => std::io::Error::other("Audio service stopped"),
+                };
+                Err(match &login {
+                    Some(login) => login.restore_after(error),
+                    None => error,
+                })
+            }
+            // An unanswered request may still save the setting.
             Err(_) if enabled && stop_on_close_enabled() => Ok(()),
+            Err(e) if enabled => {
+                unconfirmed = true;
+                Err(std::io::Error::other(format!(
+                    "Save unconfirmed. Login startup stays off pending confirmation. {e}"
+                )))
+            }
             Err(e) => Err(e),
-        };
-        if !enabled {
-            return update(());
         }
-        let login = LoginStart::read()?;
-        if let Err(e) = login.disable().and_then(update) {
-            return match login.restore() {
-                Ok(()) => Err(e),
-                Err(restore) => Err(std::io::Error::other(format!(
-                    "{e}. Could not restore login start: {restore}"
-                ))),
-            };
-        }
-        Ok(())
     })();
     let login_start = (autostart_enabled(), login_window_enabled());
     let mut state = state.lock().unwrap();
     state.setting_stop_on_close = None;
     state.login_start = Some(login_start);
+    state.stop_on_close_unconfirmed |= unconfirmed;
     match result {
-        Ok(()) => state.stop_on_close = enabled,
+        Ok(()) => {
+            state.stop_on_close = enabled;
+            if enabled {
+                state.stop_on_close_unconfirmed = false;
+            }
+        }
         Err(e) => state
             .messages
             .push((format!("Could not change stop on close: {e}"), true)),
@@ -474,6 +491,15 @@ impl LoginStart {
             Ok(())
         };
         window.and(service)
+    }
+
+    fn restore_after(&self, error: std::io::Error) -> std::io::Error {
+        match self.restore() {
+            Ok(()) => error,
+            Err(restore) => {
+                std::io::Error::other(format!("{error}. Could not restore login start: {restore}"))
+            }
+        }
     }
 }
 

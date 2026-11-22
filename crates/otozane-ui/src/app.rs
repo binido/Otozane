@@ -88,6 +88,7 @@ pub struct App {
     autostart: bool,
     stop_on_close: bool,
     setting_stop_on_close: Option<bool>,
+    stop_on_close_unconfirmed: bool,
     has_tray: bool,
     login_window: bool,
     logo: Option<(bool, egui::TextureHandle)>,
@@ -130,6 +131,7 @@ impl App {
             autostart: client::autostart_enabled(),
             stop_on_close,
             setting_stop_on_close: None,
+            stop_on_close_unconfirmed: false,
             has_tray,
             login_window: client::login_window_enabled(),
             logo: None,
@@ -157,6 +159,7 @@ impl App {
             self.plugins = s.plugins.clone();
             self.stop_on_close = s.stop_on_close;
             self.setting_stop_on_close = s.setting_stop_on_close;
+            self.stop_on_close_unconfirmed = s.stop_on_close_unconfirmed;
             if let Some((autostart, login_window)) = s.login_start.take() {
                 self.autostart = autostart;
                 self.login_window = login_window;
@@ -870,15 +873,18 @@ impl App {
             );
             widgets::divider(ui);
             let stop_on_close = self.stop_on_close;
-            let can_autostart = !stop_on_close && self.setting_stop_on_close.is_none();
+            let login_disabled = if stop_on_close {
+                Some("Unavailable while stop on close is enabled")
+            } else if self.stop_on_close_unconfirmed {
+                Some("Stop on close save is unconfirmed. Retry the setting to confirm.")
+            } else {
+                None
+            };
+            let can_autostart = login_disabled.is_none() && self.setting_stop_on_close.is_none();
             row(
                 ui,
                 "Start with session",
-                Some(if stop_on_close {
-                    "Unavailable while stop on close is enabled"
-                } else {
-                    "Runs the audio service when you log in"
-                }),
+                Some(login_disabled.unwrap_or("Runs the audio service when you log in")),
                 |ui| {
                     let mut on = self.autostart && !stop_on_close;
                     if ui
@@ -901,13 +907,11 @@ impl App {
             // macOS has no tray, so the window cannot start hidden.
             if !cfg!(target_os = "macos") {
                 widgets::divider(ui);
-                let hint = if stop_on_close {
-                    "Unavailable while stop on close is enabled"
-                } else if self.has_tray {
+                let hint = login_disabled.unwrap_or(if self.has_tray {
                     "Starts this window hidden in the tray when you log in"
                 } else {
                     "Needs a system tray, none is running"
-                };
+                });
                 row(ui, "Open in tray at login", Some(hint), |ui| {
                     let mut on = self.login_window && !stop_on_close;
                     ui.add_enabled_ui(can_autostart && (self.has_tray || on), |ui| {
