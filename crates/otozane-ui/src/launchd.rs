@@ -6,7 +6,7 @@ use std::process::Command;
 
 const LABEL: &str = "io.github.binido.otozane";
 
-fn plist_path() -> io::Result<PathBuf> {
+pub(crate) fn plist_path() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is not set"))?;
     Ok(Path::new(&home).join(format!("Library/LaunchAgents/{LABEL}.plist")))
 }
@@ -60,14 +60,6 @@ pub fn autostart_enabled() -> bool {
     plist_path().is_ok_and(|p| p.exists())
 }
 
-pub fn remove_login_agent() -> io::Result<()> {
-    // A loaded agent can finish normally without starting again at login.
-    std::fs::remove_file(plist_path()?).or_else(|e| match e.kind() {
-        io::ErrorKind::NotFound => Ok(()),
-        _ => Err(e),
-    })
-}
-
 /// Installs or removes the agent. `start_now` also loads it, which starts the
 /// service. Pass false while another instance is running.
 pub fn set_autostart(on: bool, start_now: bool) -> io::Result<()> {
@@ -75,7 +67,10 @@ pub fn set_autostart(on: bool, start_now: bool) -> io::Result<()> {
     // Unloading an agent that is not loaded fails, that is fine.
     let _ = launchctl(&["bootout", &format!("{}/{LABEL}", domain())]);
     if !on {
-        return remove_login_agent();
+        return std::fs::remove_file(path).or_else(|e| match e.kind() {
+            io::ErrorKind::NotFound => Ok(()),
+            _ => Err(e),
+        });
     }
     let service = crate::client::local_service()
         .ok_or_else(|| io::Error::other("otozaned is not next to this app"))?;

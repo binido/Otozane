@@ -157,9 +157,9 @@ impl App {
             self.plugins = s.plugins.clone();
             self.stop_on_close = s.stop_on_close;
             self.setting_stop_on_close = s.setting_stop_on_close;
-            if self.stop_on_close {
-                self.autostart = false;
-                self.login_window = false;
+            if let Some((autostart, login_window)) = s.login_start.take() {
+                self.autostart = autostart;
+                self.login_window = login_window;
             }
             (s.status.clone(), std::mem::take(&mut s.messages))
         };

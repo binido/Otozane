@@ -67,6 +67,7 @@ pub struct State {
     pub plugins: PluginList,
     pub stop_on_close: bool,
     pub setting_stop_on_close: Option<bool>,
+    pub login_start: Option<(bool, bool)>,
     /// Messages for the user, newest last (`true` = error). Drained by the UI.
     pub messages: Vec<(String, bool)>,
 }
@@ -93,6 +94,7 @@ impl ServiceClient {
             plugins: PluginList::default(),
             stop_on_close,
             setting_stop_on_close: None,
+            login_start: None,
             messages: Vec::new(),
         }));
         let st = state.clone();
@@ -306,17 +308,32 @@ fn apply_stop_on_close(state: &Mutex<State>, enabled: bool) {
     let result = (|| {
         start_window_service()?;
         let mut client = connect_within(Duration::from_secs(4))?;
-        if enabled {
-            disable_login_start()?;
+        let mut update = |()| match client.request(&Request::SetStopOnClose { enabled }) {
+            Ok(Response::Ok) => Ok(()),
+            Ok(Response::Error { message }) => Err(std::io::Error::other(message)),
+            Ok(_) => Err(std::io::Error::other("Audio service stopped")),
+            // The service may have saved the setting before the connection closed.
+            Err(_) if enabled && stop_on_close_enabled() => Ok(()),
+            Err(e) => Err(e),
+        };
+        if !enabled {
+            return update(());
         }
-        match client.request(&Request::SetStopOnClose { enabled })? {
-            Response::Ok => Ok(()),
-            Response::Error { message } => Err(std::io::Error::other(message)),
-            _ => Err(std::io::Error::other("Audio service stopped")),
+        let login = LoginStart::read()?;
+        if let Err(e) = login.disable().and_then(update) {
+            return match login.restore() {
+                Ok(()) => Err(e),
+                Err(restore) => Err(std::io::Error::other(format!(
+                    "{e}. Could not restore login start: {restore}"
+                ))),
+            };
         }
+        Ok(())
     })();
+    let login_start = (autostart_enabled(), login_window_enabled());
     let mut state = state.lock().unwrap();
     state.setting_stop_on_close = None;
+    state.login_start = Some(login_start);
     match result {
         Ok(()) => state.stop_on_close = enabled,
         Err(e) => state
@@ -368,17 +385,96 @@ fn config_home() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
 }
 
-fn disable_login_start() -> std::io::Result<()> {
-    if login_window_enabled() {
-        set_login_window(false)?;
+struct LoginFile {
+    path: std::path::PathBuf,
+    contents: Vec<u8>,
+    permissions: std::fs::Permissions,
+}
+
+impl LoginFile {
+    fn read(path: Option<std::path::PathBuf>) -> std::io::Result<Option<Self>> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        match std::fs::read(&path) {
+            Ok(contents) => Ok(Some(Self {
+                permissions: std::fs::metadata(&path)?.permissions(),
+                path,
+                contents,
+            })),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
     }
-    if autostart_enabled() {
+
+    fn disable(entry: Option<&Self>) -> std::io::Result<()> {
+        if let Some(entry) = entry {
+            std::fs::remove_file(&entry.path)?;
+        }
+        Ok(())
+    }
+
+    fn restore(entry: Option<&Self>) -> std::io::Result<()> {
+        use std::io::Write;
+
+        if let Some(entry) = entry {
+            match std::fs::File::create_new(&entry.path) {
+                Ok(mut file) => {
+                    file.write_all(&entry.contents)?;
+                    file.set_permissions(entry.permissions.clone())?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
+struct LoginStart {
+    window: Option<LoginFile>,
+    #[cfg(target_os = "macos")]
+    agent: Option<LoginFile>,
+    #[cfg(target_os = "linux")]
+    unit_enabled: bool,
+}
+
+impl LoginStart {
+    fn read() -> std::io::Result<Self> {
+        Ok(Self {
+            window: LoginFile::read(login_entry_path())?,
+            #[cfg(target_os = "macos")]
+            agent: LoginFile::read(crate::launchd::plist_path().ok())?,
+            #[cfg(target_os = "linux")]
+            unit_enabled: autostart_enabled(),
+        })
+    }
+
+    fn disable(&self) -> std::io::Result<()> {
+        LoginFile::disable(self.window.as_ref())?;
+        // Removing the plist lets the loaded launch agent finish normally.
         #[cfg(target_os = "macos")]
-        crate::launchd::remove_login_agent()?;
+        LoginFile::disable(self.agent.as_ref())?;
         #[cfg(target_os = "linux")]
-        set_autostart(false, false)?;
+        if self.unit_enabled {
+            set_autostart(false, false)?;
+        }
+        Ok(())
     }
-    Ok(())
+
+    fn restore(&self) -> std::io::Result<()> {
+        let window = LoginFile::restore(self.window.as_ref());
+        #[cfg(target_os = "macos")]
+        let service = LoginFile::restore(self.agent.as_ref());
+        #[cfg(target_os = "linux")]
+        let service = if self.unit_enabled && !autostart_enabled() {
+            // The existing unit may contain user edits and should keep its contents.
+            systemctl(&["enable", "otozane.service"])
+        } else {
+            Ok(())
+        };
+        window.and(service)
+    }
 }
 
 #[cfg(target_os = "linux")]
