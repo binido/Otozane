@@ -86,6 +86,8 @@ pub struct App {
     new_profile: String,
     renaming: Option<(String, String)>,
     autostart: bool,
+    stop_on_close: bool,
+    setting_stop_on_close: Option<bool>,
     has_tray: bool,
     login_window: bool,
     logo: Option<(bool, egui::TextureHandle)>,
@@ -100,8 +102,9 @@ impl App {
             _ => {}
         }
         theme::install(&cc.egui_ctx, settings.theme);
+        let stop_on_close = client::stop_on_close_enabled();
         Self {
-            client: ServiceClient::spawn(cc.egui_ctx.clone()),
+            client: ServiceClient::spawn(cc.egui_ctx.clone(), stop_on_close),
             page: match std::env::var("OTOZANE_PAGE").as_deref() {
                 Ok("effects" | "plugins") => Page::Effects,
                 Ok("profiles") => Page::Profiles,
@@ -125,6 +128,8 @@ impl App {
             new_profile: String::new(),
             renaming: None,
             autostart: client::autostart_enabled(),
+            stop_on_close,
+            setting_stop_on_close: None,
             has_tray,
             login_window: client::login_window_enabled(),
             logo: None,
@@ -150,6 +155,12 @@ impl App {
             self.connection = s.connection.clone();
             self.profiles = s.profiles.clone();
             self.plugins = s.plugins.clone();
+            self.stop_on_close = s.stop_on_close;
+            self.setting_stop_on_close = s.setting_stop_on_close;
+            if self.stop_on_close {
+                self.autostart = false;
+                self.login_window = false;
+            }
             (s.status.clone(), std::mem::take(&mut s.messages))
         };
         let now = Instant::now();
@@ -176,6 +187,14 @@ impl App {
             self.holds = [(0.0, now); 2];
         }
         self.status = status;
+    }
+
+    fn start_service(&self) -> std::io::Result<()> {
+        if self.stop_on_close {
+            client::start_window_service()
+        } else {
+            client::start_service()
+        }
     }
 
     /// Current state as (color, short title, detail line).
@@ -315,7 +334,7 @@ impl App {
                 if ui
                     .add(widgets::primary(ui, icon_text(icons::POWER, "Start service")))
                     .clicked()
-                    && let Err(e) = client::start_service()
+                    && let Err(e) = self.start_service()
                 {
                     self.toasts.push((
                         format!("Could not start otozaned: {e}"),
@@ -837,11 +856,36 @@ impl App {
         card(ui, |ui| {
             row(
                 ui,
-                "Start with session",
-                Some("Runs the audio service when you log in"),
+                "Stop processing when the window is closed",
+                Some("Otozane Microphone stays available and outputs silence"),
                 |ui| {
-                    let mut on = self.autostart;
-                    if widgets::switch(ui, &mut on).changed() {
+                    let mut enabled = self.setting_stop_on_close.unwrap_or(self.stop_on_close);
+                    ui.add_enabled_ui(self.setting_stop_on_close.is_none(), |ui| {
+                        if widgets::switch(ui, &mut enabled).changed() {
+                            self.setting_stop_on_close = Some(enabled);
+                            self.client.set_stop_on_close(enabled);
+                        }
+                    });
+                },
+            );
+            widgets::divider(ui);
+            let stop_on_close = self.stop_on_close;
+            let can_autostart = !stop_on_close && self.setting_stop_on_close.is_none();
+            row(
+                ui,
+                "Start with session",
+                Some(if stop_on_close {
+                    "Unavailable while stop on close is enabled"
+                } else {
+                    "Runs the audio service when you log in"
+                }),
+                |ui| {
+                    let mut on = self.autostart && !stop_on_close;
+                    if ui
+                        .add_enabled_ui(can_autostart, |ui| widgets::switch(ui, &mut on))
+                        .inner
+                        .changed()
+                    {
                         let running = self.connection == Connection::Connected;
                         match client::set_autostart(on, !running) {
                             Ok(()) => self.autostart = on,
@@ -857,14 +901,16 @@ impl App {
             // macOS has no tray, so the window cannot start hidden.
             if !cfg!(target_os = "macos") {
                 widgets::divider(ui);
-                let hint = if self.has_tray {
+                let hint = if stop_on_close {
+                    "Unavailable while stop on close is enabled"
+                } else if self.has_tray {
                     "Starts this window hidden in the tray when you log in"
                 } else {
                     "Needs a system tray, none is running"
                 };
                 row(ui, "Open in tray at login", Some(hint), |ui| {
-                    let mut on = self.login_window;
-                    ui.add_enabled_ui(self.has_tray || on, |ui| {
+                    let mut on = self.login_window && !stop_on_close;
+                    ui.add_enabled_ui(can_autostart && (self.has_tray || on), |ui| {
                         if widgets::switch(ui, &mut on).changed() {
                             match client::set_login_window(on) {
                                 Ok(()) => self.login_window = on,
@@ -878,9 +924,11 @@ impl App {
                     });
                 });
             }
-            if self.status.is_some() {
+            if self.status.is_some() || stop_on_close {
                 widgets::divider(ui);
-                let sub = if self.has_tray && cfg!(target_os = "macos") {
+                let sub = if stop_on_close {
+                    "Starts when you open Otozane and stops when you close the window"
+                } else if self.has_tray && cfg!(target_os = "macos") {
                     "Keeps running when this window is closed; Otozane stays in the menu bar"
                 } else if self.has_tray {
                     "Keeps running when this window is closed; the window hides to the tray"
@@ -888,9 +936,10 @@ impl App {
                     "Keeps running when this window is closed"
                 };
                 row(ui, "Audio service", Some(sub), |ui| {
-                    if ui
-                        .add(widgets::danger(ui, icon_text(icons::POWER, "Stop")))
-                        .clicked()
+                    if self.status.is_some()
+                        && ui
+                            .add(widgets::danger(ui, icon_text(icons::POWER, "Stop")))
+                            .clicked()
                     {
                         self.send(Request::Shutdown);
                     }
@@ -1002,7 +1051,11 @@ impl eframe::App for App {
         }
         #[cfg(target_os = "macos")]
         if self.has_tray {
-            crate::menubar::on_frame(ui.ctx(), self.status.as_ref());
+            crate::menubar::on_frame(
+                ui.ctx(),
+                self.status.as_ref(),
+                self.setting_stop_on_close.unwrap_or(self.stop_on_close),
+            );
         }
         dev_screenshot(ui);
         let p = theme::current(ui.ctx());
@@ -1096,6 +1149,12 @@ impl eframe::App for App {
                 });
             ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.client.close();
     }
 }
 

@@ -208,6 +208,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_settings_keep_background_processing() {
+        let mut settings: Settings = toml::from_str("processing_enabled = false").unwrap();
+        assert!(!settings.stop_on_close);
+        assert!(!settings.processing_enabled);
+        settings.stop_on_close = true;
+        let saved = toml::to_string(&settings).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&saved).unwrap(), settings);
+    }
+
+    #[test]
     fn profile_roundtrips_and_tolerates_missing_params() {
         let p = Profile::default();
         let s = toml::to_string(&p).unwrap();

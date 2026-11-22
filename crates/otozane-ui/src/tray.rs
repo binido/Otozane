@@ -234,6 +234,7 @@ fn state(client: &mut Option<Client>) -> (&'static str, Option<Mode>) {
             };
             (state, Some(Mode::of(&st)))
         }
+        Some(Ok(Response::Stopped)) => ("Service stopped", None),
         Some(Ok(_)) => ("Connecting", None),
         _ => {
             *client = None;

@@ -1,5 +1,5 @@
 //! macOS menu bar icon: shows the service state, switches the processing
-//! mode, shows the window and quits. Closing the window only hides it.
+//! mode, shows the window and quits.
 
 use crate::client::Mode;
 use objc2::rc::Retained;
@@ -21,6 +21,7 @@ struct Items {
     modes: Vec<(Mode, CheckMenuItem)>,
     show: MenuItem,
     quit: MenuItem,
+    ctx: egui::Context,
     /// Mode last shown, `None` while the service is not reachable.
     mode: Option<Mode>,
 }
@@ -31,7 +32,7 @@ thread_local! {
 }
 
 /// Adds the icon to the menu bar. Call on the main thread once the event loop runs.
-pub fn spawn() -> Result<(), String> {
+pub fn spawn(ctx: egui::Context) -> Result<(), String> {
     let state = MenuItem::new("Connecting", false, None);
     let modes: Vec<_> = Mode::ALL
         .iter()
@@ -68,6 +69,7 @@ pub fn spawn() -> Result<(), String> {
             modes,
             show,
             quit,
+            ctx,
             mode: None,
         })
     });
@@ -90,7 +92,11 @@ impl Items {
         if e.id == *self.show.id() {
             show(&app);
         } else if e.id == *self.quit.id() {
-            app.terminate(None);
+            if crate::client::stop_on_close_enabled() {
+                self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                app.terminate(None);
+            }
         } else if let Some(&(mode, _)) = self.modes.iter().find(|(_, i)| e.id == *i.id()) {
             let from = self.mode.unwrap_or(mode);
             self.set_mode(Some(mode));
@@ -167,8 +173,9 @@ fn show(app: &NSApplication) {
 // ponytail: the menu and the icon refresh only while the window draws frames,
 // a state or mode changed while hidden shows up on the next show. A status
 // poll thread posting to the main thread lifts this.
-pub fn on_frame(ctx: &egui::Context, status: Option<&Status>) {
-    if ctx.input(|i| i.viewport().close_requested())
+pub fn on_frame(ctx: &egui::Context, status: Option<&Status>, stop_on_close: bool) {
+    if !stop_on_close
+        && ctx.input(|i| i.viewport().close_requested())
         && let Some(mtm) = MainThreadMarker::new()
     {
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
