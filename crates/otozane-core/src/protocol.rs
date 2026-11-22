@@ -24,6 +24,10 @@ pub enum Request {
     SetMonitor {
         on: bool,
     },
+    /// Capture channel count, 1 (mono) or 2 (stereo). Applied without a restart.
+    SetChannels {
+        channels: u32,
+    },
     SetChain {
         chain: Vec<EffectConfig>,
     },

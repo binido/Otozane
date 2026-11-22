@@ -30,7 +30,6 @@ Status legend: [x] done, [~] partial, [ ] not started.
 - JSFX via ysfx.
 - Tune the Voice preset on real speech (not verified on a speech recording yet).
 - Optional resampling-based drift correction instead of dropping frames.
-- Stereo/mono switch at runtime (currently needs a service restart).
 
 ## Key decisions
 

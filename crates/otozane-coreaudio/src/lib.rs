@@ -38,6 +38,7 @@ enum Command {
     SetInput(Option<String>),
     SetMuted(bool),
     SetMonitor(bool),
+    SetChannels(usize),
     Quit,
 }
 
@@ -69,7 +70,7 @@ pub struct Backend {
 impl Backend {
     /// Starts the backend thread. `input` is the device UID of the
     /// microphone to capture, or `None` to follow the system default.
-    pub fn start(engine: Engine, input: Option<String>) -> Self {
+    pub fn start(engine: Engine, input: Option<String>, channels: usize) -> Self {
         let status = Arc::new(Mutex::new(Status::default()));
         let counters = Arc::new(Counters::default());
         let (out_tx, out_rx) = rtrb::RingBuffer::new(RING_FRAMES * STEREO);
@@ -89,7 +90,7 @@ impl Backend {
         let (tx, rx) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("otozane-coreaudio".into())
-            .spawn(move || run(shared, rx, input))
+            .spawn(move || run(shared, rx, input, channels))
             .expect("failed to spawn Core Audio thread");
         Self {
             tx,
@@ -112,6 +113,11 @@ impl Backend {
     /// Plays the processed microphone to the system default output.
     pub fn set_monitor(&self, on: bool) {
         let _ = self.tx.send(Command::SetMonitor(on));
+    }
+
+    /// Recreates the capture stream with `channels` channels.
+    pub fn set_channels(&self, channels: usize) {
+        let _ = self.tx.send(Command::SetChannels(channels));
     }
 }
 
@@ -144,19 +150,24 @@ struct Main {
     desired: Option<String>,
     muted: bool,
     monitoring: bool,
+    channels: usize,
+    /// Channel count of the running capture stream.
+    capture_channels: usize,
     last_physical_default: Option<String>,
     capture: Option<Running>,
     output: Option<Running>,
     monitor: Option<Running>,
 }
 
-fn run(shared: Shared, rx: Receiver<Command>, input: Option<String>) {
+fn run(shared: Shared, rx: Receiver<Command>, input: Option<String>, channels: usize) {
     let mut m = Main {
         host: cpal::default_host(),
         shared,
         desired: input,
         muted: false,
         monitoring: false,
+        channels,
+        capture_channels: channels,
         last_physical_default: None,
         capture: None,
         output: None,
@@ -169,6 +180,7 @@ fn run(shared: Shared, rx: Receiver<Command>, input: Option<String>) {
             Ok(Command::SetInput(d)) => m.desired = d,
             Ok(Command::SetMuted(on)) => m.muted = on,
             Ok(Command::SetMonitor(on)) => m.monitoring = on,
+            Ok(Command::SetChannels(n)) => m.channels = n,
             Ok(Command::Quit) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {
                 // Without input callbacks the engine is pumped with empty
@@ -177,7 +189,7 @@ fn run(shared: Shared, rx: Receiver<Command>, input: Option<String>) {
                 if cycles == last_cycles
                     && let Ok(mut rt) = m.shared.rt.try_lock()
                 {
-                    rt.engine.process_interleaved(&mut []);
+                    rt.engine.pump();
                 }
                 last_cycles = cycles;
                 if Instant::now() < next_poll {
@@ -236,6 +248,7 @@ impl Main {
             .capture
             .as_ref()
             .is_some_and(|c| c.alive_on(target.as_deref()))
+            && self.capture_channels == self.channels
         {
             None
         } else {
@@ -250,10 +263,11 @@ impl Main {
                 (Some(uid), ..) => {
                     match find(self.host.input_devices(), uid)
                         .ok_or_else(|| "device disappeared".to_string())
-                        .and_then(|d| create_capture(&d, &self.shared))
+                        .and_then(|d| create_capture(&d, &self.shared, self.channels))
                     {
                         Ok(c) => {
                             self.capture = Some(c);
+                            self.capture_channels = self.channels;
                             CaptureState::Running(uid.clone())
                         }
                         Err(e) => CaptureState::Error(e),
@@ -399,7 +413,7 @@ fn play(stream: cpal::Stream, uid: String, failed: Arc<AtomicBool>) -> Result<Ru
     })
 }
 
-fn create_capture(device: &cpal::Device, shared: &Shared) -> Result<Running, String> {
+fn create_capture(device: &cpal::Device, shared: &Shared, ch: usize) -> Result<Running, String> {
     let config = device
         .default_input_config()
         .map_err(|e| e.to_string())?
@@ -411,7 +425,6 @@ fn create_capture(device: &cpal::Device, shared: &Shared) -> Result<Running, Str
         shared.counters.clone(),
         shared.monitor_on.clone(),
     );
-    let ch = rt.lock().unwrap().engine.channels();
     let mut scratch = vec![0.0f32; SCRATCH_FRAMES * ch];
     let mut faded = 0usize;
     let (failed, on_error) = error_flag();
@@ -438,7 +451,7 @@ fn create_capture(device: &cpal::Device, shared: &Shared) -> Result<Running, Str
                         n += 1;
                     }
                     let samples = &mut scratch[..n * ch];
-                    rt.engine.process_interleaved(samples);
+                    rt.engine.process_interleaved(samples, ch);
                     if faded < FADE_IN_FRAMES {
                         for frame in samples.chunks_exact_mut(ch) {
                             let g = (faded as f32 / FADE_IN_FRAMES as f32).min(1.0);

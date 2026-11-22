@@ -76,7 +76,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ctl.shared
         .processing_enabled
         .store(settings.processing_enabled, Ordering::Relaxed);
-    let backend = backend::Backend::start(eng, settings.input_device.clone());
+    let backend = backend::Backend::start(
+        eng,
+        settings.input_device.clone(),
+        settings.channels as usize,
+    );
     let mut svc = Service::new(ctl, backend, store, settings);
     // Also makes sure the active profile exists on disk.
     svc.apply_chain(profile.chain)?;
