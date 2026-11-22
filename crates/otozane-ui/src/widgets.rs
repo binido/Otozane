@@ -81,24 +81,30 @@ pub fn row(ui: &mut Ui, title: &str, subtitle: Option<&str>, controls: impl FnOn
     let min_h = if subtitle.is_some() { 44.0 } else { 36.0 };
     let (row_h, text_h): (f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or((min_h, min_h));
     let size = Vec2::new(ui.available_width(), row_h);
+    // Controls first, right to left, so the text wraps in the width left of them
+    // instead of running under them in narrow windows.
     let measured = ui
-        .allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+        .allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
             ui.set_min_height(row_h);
-            let text = ui
-                .vertical(|ui| {
-                    ui.add_space(((row_h - text_h) / 2.0).max(0.0));
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    let mut rect = ui.label(title).rect;
-                    if let Some(s) = subtitle {
-                        rect = rect.union(ui.label(RichText::new(s).small().weak()).rect);
-                    }
-                    rect.height()
-                })
-                .inner;
             let ctrl = ui
-                .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                .scope(|ui| {
                     controls(ui);
                     ui.min_rect().height()
+                })
+                .inner;
+            ui.add_space(8.0);
+            let text = ui
+                .with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(((row_h - text_h) / 2.0).max(0.0));
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        let mut rect = ui.label(title).rect;
+                        if let Some(s) = subtitle {
+                            rect = rect.union(ui.label(RichText::new(s).small().weak()).rect);
+                        }
+                        rect.height()
+                    })
+                    .inner
                 })
                 .inner;
             (text.max(ctrl).max(min_h), text)
