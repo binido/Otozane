@@ -174,13 +174,35 @@ impl Engine {
         if buf.is_empty() {
             return;
         }
-        // Audio of the old stream before it is recreated for a new channel
-        // count. Silence, so unprocessed audio never reaches the output.
+        // Silence a stream whose format differs from the active chain.
         if channels != self.chain.channels {
             buf.fill(0.0);
             return;
         }
-        let ch = channels;
+        self.process(buf, channels);
+    }
+
+    /// Processes stereo capture in place and returns the active channel count.
+    /// Mono output occupies the first half of `buf` and uses the left input.
+    pub fn process_stereo_capture(&mut self, buf: &mut [f32]) -> usize {
+        self.apply_pending();
+        let channels = self.chain.channels;
+        let samples = if channels == 1 {
+            let frames = buf.len() / 2;
+            for i in 0..frames {
+                buf[i] = buf[2 * i];
+            }
+            &mut buf[..frames]
+        } else {
+            buf
+        };
+        if !samples.is_empty() {
+            self.process(samples, channels);
+        }
+        channels
+    }
+
+    fn process(&mut self, buf: &mut [f32], ch: usize) {
         let master = self.shared.processing_enabled.load(Ordering::Relaxed);
         let in_peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         for chunk in buf.chunks_mut(MAX_BLOCK * ch) {
@@ -642,5 +664,25 @@ mod tests {
         assert!((buf[126] - 0.5 * 1.995).abs() < 0.01);
         assert!((buf[127] - 0.5 * 1.995).abs() < 0.01);
         ctl.collect_garbage();
+    }
+
+    #[test]
+    fn stereo_capture_processes_with_the_new_chain_format() {
+        let (mut ctl, mut eng) = new(48000.0, 2);
+        let chain = [gain_cfg(1, 6.0)];
+        for channels in [1, 2] {
+            ctl.set_channels(channels, &chain, &mut no_plugins).unwrap();
+            let mut buf = [0.5, -0.25, 0.25, -0.125];
+            let active = eng.process_stereo_capture(&mut buf);
+            assert_eq!(active, channels);
+            let expected: &[f32] = if channels == 1 {
+                &[0.5, 0.25]
+            } else {
+                &[0.5, -0.25, 0.25, -0.125]
+            };
+            for (&actual, &input) in buf[..2 * active].iter().zip(expected) {
+                assert!((actual - input * 1.995).abs() < 0.001);
+            }
+        }
     }
 }

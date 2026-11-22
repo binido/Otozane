@@ -8,7 +8,7 @@
 set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 OUT=${OUT:-${XDG_RUNTIME_DIR:-/tmp}/otozane-e2e}
-BIN=${BIN:-./target/debug/otozaned}
+BIN=${BIN:-${CARGO_TARGET_DIR:-$DIR/../target}/debug/otozaned}
 mkdir -p "$OUT"
 export OTOZANE_SOCKET="$OUT/otozane.sock" OTOZANE_NODE_PREFIX=oz_test_
 TONE=${1:-$OUT/tone.wav}
@@ -16,7 +16,7 @@ TONE=${1:-$OUT/tone.wav}
 pw-loopback --capture-props='media.class=Audio/Sink node.name=oz_test_sink audio.position=[MONO] node.dont-move=true' \
   --playback-props='media.class=Audio/Source node.name=oz_test_src audio.position=[MONO] node.dont-move=true' >"$OUT/loop.log" 2>&1 &
 LP=$!; sleep 1
-XDG_CONFIG_HOME="$OUT/config" $BIN >"$OUT/svc.log" 2>&1 &
+XDG_CONFIG_HOME="$OUT/config" "$BIN" >"$OUT/svc.log" 2>&1 &
 SV=$!; sleep 1
 kill -0 $SV 2>/dev/null || { echo "otozaned failed to start:"; cat "$OUT/svc.log"; kill $LP; exit 1; }
 python3 "$DIR/ipc.py" '{"cmd":"set_input","device":"oz_test_src"}' ${2:+"{\"cmd\":\"set_chain\",\"chain\":$2}"} >/dev/null

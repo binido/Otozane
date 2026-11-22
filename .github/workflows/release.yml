@@ -107,9 +107,6 @@ jobs:
       - name: Fetch ysfx
         run: scripts/fetch-ysfx.sh
 
-      - name: Fetch ysfx
-        run: scripts/fetch-ysfx.sh
-
       - name: Build the audio driver
         run: scripts/build-driver.sh third_party/driver
 
