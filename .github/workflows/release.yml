@@ -30,7 +30,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git build-essential \
-            clang pkgconf libpipewire-0.3-dev dpkg-dev rpm desktop-file-utils
+            clang cmake pkgconf libpipewire-0.3-dev dpkg-dev rpm desktop-file-utils
 
       - uses: actions/checkout@v5
 
@@ -64,6 +64,9 @@ jobs:
       # Hush runtime (libweya_nc + model), built from the pinned Hush sources.
       - name: Build Hush
         run: scripts/build-hush.sh third_party/hush
+
+      - name: Fetch ysfx
+        run: scripts/fetch-ysfx.sh
 
       - name: Build
         run: |
@@ -100,6 +103,12 @@ jobs:
 
       - name: Build Hush
         run: scripts/build-hush.sh third_party/hush
+
+      - name: Fetch ysfx
+        run: scripts/fetch-ysfx.sh
+
+      - name: Fetch ysfx
+        run: scripts/fetch-ysfx.sh
 
       - name: Build the audio driver
         run: scripts/build-driver.sh third_party/driver

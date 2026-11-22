@@ -1,0 +1,11 @@
+desc:Test Gain
+author:Otozane
+tags:utility gain
+slider1:0<-60,12,0.1>Gain (dB)
+
+@slider
+g = 10 ^ (slider1 / 20);
+
+@sample
+spl0 *= g;
+spl1 *= g;

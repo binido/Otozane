@@ -7,6 +7,15 @@ for the tagged version as the GitHub release notes and fails if it is missing.
 
 ### New
 
+- **JSFX plugins.** Effects written in REAPER's JSFX language now load like
+  VST3 plugins. Put the scripts in `~/.config/REAPER/Effects` (or any folder
+  added to the plugin directories), press **Rescan**, and pick them in the
+  plugin browser, marked JSFX.
+  - Sliders appear as parameters and are saved in the profile together with
+    the script's own state.
+  - A script that fails to compile shows the error on its effect card.
+  - Scripts with graphics (`@gfx`) work, but their graphics are not shown.
+    MIDI is not passed to scripts.
 - **Mono or Stereo without a restart.** Switch the format in **Settings →
   Audio → Format**, the audio service applies it right away. Apps recording
   from Otozane Microphone keep recording, with a short silence of a few tens of

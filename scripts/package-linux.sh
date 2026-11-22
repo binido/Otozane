@@ -39,6 +39,9 @@ install -Dm644 "$hush/advanced_dfnet16k_model_best_onnx.tar.gz" \
   "$payload/usr/lib/otozane/hush/advanced_dfnet16k_model_best_onnx.tar.gz"
 hush_lic=(Hush-LICENSE DeepFilterNet-LICENSE-MIT DeepFilterNet-LICENSE-APACHE Hush-crates.txt)
 for f in "${hush_lic[@]}"; do install -Dm644 "$hush/$f" "$lic/$f"; done
+# ysfx and WDL, linked statically for JSFX hosting.
+install -Dm644 "$root/third_party/ysfx/LICENSE" "$lic/ysfx-LICENSE"
+install -Dm644 "$root/third_party/ysfx/thirdparty/WDL/LICENSE.txt" "$lic/WDL-LICENSE"
 desktop-file-validate "$payload/usr/share/applications/otozane.desktop"
 
 # Tarball: the payload plus the installer that copies it into a prefix.

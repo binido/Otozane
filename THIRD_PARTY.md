@@ -15,7 +15,8 @@
 | [rtrb](https://github.com/mgeier/rtrb) | Lock-free SPSC ring buffers | MIT OR Apache-2.0 |
 | serde, serde_json, toml | Configuration and IPC | MIT OR Apache-2.0 |
 | [vst3](https://github.com/coupler-rs/vst3-rs) (vst3-rs 0.3) | VST3 interface bindings for plugin hosting | MIT OR Apache-2.0 |
+| [ysfx](https://github.com/jpcima/ysfx) (commit `8077347`) with [WDL](https://www.cockos.com/wdl/) EEL2 and [dr_libs](https://github.com/mackron/dr_libs) | JSFX compiler and runtime, fetched by `scripts/fetch-ysfx.sh` and linked statically into `otozaned` (licences shipped as `ysfx-LICENSE`, `WDL-LICENSE`) | Apache License 2.0 (ysfx), zlib-style (WDL), Public Domain or MIT-0 (dr_libs) |
 | [rfd](https://github.com/PolyMeilex/rfd) | Native file dialogs (profile import/export, via the XDG desktop portal) | MIT |
 | [libloading](https://github.com/nagisa/rust_libloading) | Loading plugin libraries and the Hush runtime | ISC |
 
-No third-party audio plugins are bundled.
+No third-party audio plugins or JSFX scripts are bundled.

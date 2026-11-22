@@ -66,6 +66,7 @@ Scope:
 | Voice preset | Gain, RNNoise with voice detection, gate, compressor, limiter. Default for new setups; **Profiles → Presets** creates it as a new profile. |
 | Profiles | Create, rename, delete, switch, export to and import from `.toml`. The active profile is saved automatically. |
 | VST3 plugins | Linux builds, for example `lsp-plugins-vst3`. Plugin browser with search, parameters, state stored in profiles. |
+| JSFX plugins | Scripts from `~/.config/REAPER/Effects` and the plugin directories, run through ysfx. Sliders as parameters, state stored in profiles. No graphics (`@gfx`) or MIDI. |
 | Desktop app | egui. Light, dark and system themes, level meters, diagnostics. |
 | Tray | StatusNotifierItem. Shows the service state, switches the mode, shows or hides the window, quits the app. Requires a tray host such as Waybar, KDE or Noctalia. |
 
@@ -73,7 +74,7 @@ Limitations:
 
 - VST3 plugins are scanned in separate processes but run inside the service.
   A plugin that crashes during processing stops the service.
-- Not implemented: JSFX, CLAP, plugin editor windows. See [PLAN.md](PLAN.md).
+- Not implemented: CLAP, plugin editor windows. See [PLAN.md](PLAN.md).
 
 ## Interface
 

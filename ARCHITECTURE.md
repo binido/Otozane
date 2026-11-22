@@ -7,7 +7,7 @@ otozane-core       platform-independent: engine, effects, config, IPC protocol
 otozane-pipewire   Linux backend (depends on core)
 otozane-coreaudio  macOS backend (depends on core)
 otozane-service    otozaned binary (core + the backend for the target OS)
-otozane-plugins    third-party plugin hosting (VST3)
+otozane-plugins    third-party plugin hosting (VST3, JSFX)
 otozane-ui         otozane binary (core only; talks to the service over IPC)
 ```
 
@@ -266,3 +266,22 @@ fallbacks for scripts Roboto lacks.
   Later `restartComponent` latency changes are not applied yet.
 - Controller calls (parameter text, state) come from service threads under
   the service lock, not from one dedicated UI thread.
+
+JSFX scripts run through ysfx (`src/jsfx.rs`), built from `third_party/ysfx`
+by `build.rs` as a static library with graphics off.
+
+- **Scanning** walks `~/.config/REAPER/Effects` and the other plugin
+  directories (four levels deep, skipping `.vst3` bundles) for `*.jsfx` and
+  extensionless files with a `desc:` line. Scripts are only parsed (imports
+  ignored), so this happens in the scanning thread, not in helper processes.
+- On load the script is compiled to native code, then `@init` runs, then the
+  saved state is restored, then an empty block runs `@slider` so `pdc_delay`
+  can be read as latency. Compile errors from ysfx become the card error.
+- **Parameters** are the visible, non-file sliders, normalized 0..1 and keyed
+  `sliderN`; the processor maps them to the slider range and step.
+- **Channels**: a stereo chain mixes to mono for a one-input script and copies
+  a one-output result to both channels; a mono chain feeds both inputs of a
+  stereo script and keeps its first output (scripts often process only `spl0`).
+- **State** is the slider values plus the `@serialize` data. Saving runs
+  script code, so the instance sits behind a mutex; the audio thread only
+  `try_lock`s it and passes that block through dry when a save holds it.

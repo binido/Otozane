@@ -37,6 +37,9 @@ done
 # Audio driver, copied to /Library/Audio/Plug-Ins/HAL by Settings -> Install. Signed by build-driver.sh.
 cp -R "$driver/Otozane.driver" "$app/Resources/"
 install -m644 "$driver"/libASPL-LICENSE* "$app/Resources/licenses/"
+# ysfx and WDL, linked statically for JSFX hosting.
+install -m644 "$root/third_party/ysfx/LICENSE" "$app/Resources/licenses/ysfx-LICENSE"
+install -m644 "$root/third_party/ysfx/thirdparty/WDL/LICENSE.txt" "$app/Resources/licenses/WDL-LICENSE"
 
 # Icon from the 256 px PNG, the largest bundled raster.
 icons="$work/otozane.iconset"

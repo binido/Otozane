@@ -2,11 +2,12 @@
 
 ## Setup
 
-Arch/CachyOS packages: `rust`, `clang`, `pkgconf`, `pipewire`, `rnnoise`.
+Arch/CachyOS packages: `rust`, `clang`, `cmake`, `pkgconf`, `pipewire`, `rnnoise`.
 Optional for scripts: `python`, `python-pillow` (screenshots), `python-fonttools` (icons).
 
 ```sh
 scripts/build-hush.sh    # once: Hush runtime into third_party/hush (Hush tests skip without it)
+scripts/fetch-ysfx.sh    # once: ysfx sources into third_party/ysfx, built by build.rs (needs cmake; without it JSFX is disabled)
 cargo build
 cargo test --workspace
 cargo clippy --workspace --all-targets
@@ -51,6 +52,7 @@ path, also used by the UI and `scripts/ipc.py`) and `OTOZANE_NODE_PREFIX`
 | `scripts/ipc.py JSON...` | Sends raw requests to the running service. |
 | `scripts/screenshot.sh OUT.png [page] [dark\|light]` | Renders the UI and saves a screenshot (uses `OTOZANE_SCREENSHOT`, `OTOZANE_PAGE`, `OTOZANE_THEME`). |
 | `scripts/icons.py` | Regenerates the Lucide font subset and `src/icons.rs`. |
+| `scripts/fetch-ysfx.sh [OUT_DIR]` | Fetches the pinned ysfx commit with its submodules (default `third_party/ysfx`). `otozane-plugins/build.rs` builds it with CMake; without it JSFX plugins fail to load with "built without JSFX support". |
 | `scripts/build-hush.sh [OUT_DIR]` | Builds `libweya_nc.so` from the pinned Hush commit and copies it with the model and licences (default `third_party/hush`). `OTOZANE_HUSH_DIR` points the service at another directory. |
 
 Example checks used during development:
