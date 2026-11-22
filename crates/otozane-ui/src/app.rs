@@ -795,6 +795,9 @@ impl App {
                 ui.painter().rect_filled(rect, 10.0, p.accent_soft);
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::SPARKLES, egui::FontId::proportional(17.0), p.accent);
                 ui.vertical(|ui| {
+                    // A child column is laid out top-down, so the offset to the 48 px row centre is added by hand.
+                    let text_h = ui.text_style_height(&egui::TextStyle::Body) + ui.text_style_height(&egui::TextStyle::Small) + 2.0;
+                    ui.add_space((48.0 - text_h) / 2.0);
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(widgets::medium("Voice"));
                     ui.label(RichText::new("Gain, noise suppression with voice detection, gate, compressor, limiter").small().weak());
