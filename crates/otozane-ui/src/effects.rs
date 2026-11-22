@@ -143,46 +143,17 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                         fg,
                     );
                     ui.add_space(4.0);
-                    let chevron = if expanded {
-                        icons::CHEVRON_DOWN
-                    } else {
-                        icons::CHEVRON_RIGHT
-                    };
-                    let mut title =
-                        widgets::medium(format!("{}  {chevron}", app.chain[i].display_name()));
-                    if !on {
-                        title = title.weak();
-                    }
-                    if ui
-                        .add(egui::Label::new(title).sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        if expanded {
-                            app.collapsed.insert(id);
-                        } else {
-                            app.collapsed.remove(&id);
-                        }
-                    }
-                    if !on {
-                        widgets::badge(ui, "Bypassed", p.text_weak, p.raised);
-                    } else if let (Some((label, unit)), Some(v)) = (kind.meter(), meters.get(i)) {
-                        widgets::badge(
-                            ui,
-                            &format!("{label} {v:.0} {unit}"),
-                            p.text_weak,
-                            p.raised,
-                        );
-                    }
+                    // Buttons first, right to left, so the title and badge get only the
+                    // width left of them.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mut on = on;
-                        if widgets::switch(ui, &mut on)
+                        let mut enabled = on;
+                        if widgets::switch(ui, &mut enabled)
                             .on_hover_text("Enable or bypass")
                             .changed()
                         {
-                            app.chain[i].enabled = on;
+                            app.chain[i].enabled = enabled;
                             app.edited();
-                            app.send(Request::SetEffectEnabled { id, enabled: on });
+                            app.send(Request::SetEffectEnabled { id, enabled });
                         }
                         ui.add_space(6.0);
                         if widgets::icon_button(ui, icons::TRASH_2, "Remove").clicked() {
@@ -198,13 +169,61 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                                 action = Some(Action::Move(i, i - 1));
                             }
                         });
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let chevron = if expanded {
+                                icons::CHEVRON_DOWN
+                            } else {
+                                icons::CHEVRON_RIGHT
+                            };
+                            let mut title = widgets::medium(format!(
+                                "{}  {chevron}",
+                                app.chain[i].display_name()
+                            ));
+                            if !on {
+                                title = title.weak();
+                            }
+                            if ui
+                                .add(
+                                    egui::Label::new(title)
+                                        .sense(egui::Sense::click())
+                                        .truncate(),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                if expanded {
+                                    app.collapsed.insert(id);
+                                } else {
+                                    app.collapsed.remove(&id);
+                                }
+                            }
+                            let badge = if !on {
+                                Some("Bypassed".to_string())
+                            } else if let (Some((label, unit)), Some(v)) =
+                                (kind.meter(), meters.get(i))
+                            {
+                                Some(format!("{label} {v:.0} {unit}"))
+                            } else {
+                                None
+                            };
+                            // The badge only repeats what the switch or the parameters show,
+                            // so it is left out when it does not fit next to the title.
+                            if let Some(text) = badge
+                                && ui.available_width() >= widgets::badge_size(ui, &text).x
+                            {
+                                widgets::badge(ui, &text, p.text_weak, p.raised);
+                            }
+                        });
                     });
                 });
                 let info = infos.get(i).cloned().unwrap_or_default();
                 if let Some(e) = &info.error {
                     ui.label(RichText::new(icon_text(icons::CIRCLE_ALERT, e)).color(p.error));
                 }
-                if expanded {
+                // A plugin that failed to load has nothing under its error line.
+                let failed =
+                    kind == EffectKind::Plugin && info.error.is_some() && info.params.is_empty();
+                if expanded && !failed {
                     ui.add_space(6.0);
                     widgets::divider(ui);
                     ui.add_space(6.0);
@@ -302,12 +321,7 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
     let mut close = false;
     widgets::card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(icon(icons::SEARCH, 16.0).color(p.text_weak));
-            ui.add(
-                egui::TextEdit::singleline(&mut query)
-                    .hint_text("Search plugins by name, vendor or category")
-                    .desired_width(ui.available_width() - 150.0),
-            );
+            // Buttons first, right to left, so the field takes exactly the width left over.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button(icon(icons::X, 15.0))
@@ -328,6 +342,14 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
                 {
                     app.send(Request::ScanPlugins);
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(icon(icons::SEARCH, 16.0).color(p.text_weak));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut query)
+                            .hint_text("Search plugins by name, vendor or category")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
             });
         });
         ui.add_space(6.0);
@@ -359,20 +381,25 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
         egui::ScrollArea::vertical()
             .max_height(320.0)
             .show(ui, |ui| {
-                for info in matches {
+                for (k, info) in matches.into_iter().enumerate() {
+                    if k > 0 {
+                        ui.separator();
+                    }
+                    // Vendor and category are often empty, VST3 joins subcategories with "|".
+                    let category = info.category.replace('|', ", ");
+                    let details = [
+                        info.plugin.vendor.as_str(),
+                        info.plugin.format.name(),
+                        &category,
+                    ]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" \u{b7} ");
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(&info.plugin.name);
-                            let metadata = [
-                                info.plugin.vendor.as_str(),
-                                info.plugin.format.name(),
-                                info.category.as_str(),
-                            ]
-                            .into_iter()
-                            .filter(|part| !part.is_empty())
-                            .collect::<Vec<_>>()
-                            .join(" \u{b7} ");
-                            ui.label(RichText::new(metadata).small().weak());
+                            ui.label(RichText::new(details).small().weak());
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button(icon_text(icons::PLUS, "Add")).clicked() {
@@ -380,7 +407,6 @@ fn browser(app: &mut App, ui: &mut Ui) -> Option<Action> {
                             }
                         });
                     });
-                    ui.separator();
                 }
             });
         if !app.plugins.errors.is_empty() {
@@ -507,36 +533,47 @@ fn eq_editor(ui: &mut Ui, id: u64, values: &[f32], changes: &mut Vec<(&'static s
     ui.add_space(6.0);
 
     let specs = EffectKind::Equalizer.params();
-    egui::Grid::new(("eq", id))
-        .num_columns(5)
-        .spacing([12.0, 6.0])
+    // Band number, type box, three value fields and the gaps take about 420 px,
+    // the sliders share the rest. Below that the grid scrolls sideways instead
+    // of widening the card past the others.
+    let slider_w = ((ui.available_width() - 420.0) / 3.0).clamp(60.0, 110.0);
+    egui::ScrollArea::horizontal()
+        .id_salt(("eq-scroll", id))
         .show(ui, |ui| {
-            for h in ["", "Type", "Frequency", "Gain", "Q"] {
-                ui.label(RichText::new(h).small().weak());
-            }
-            ui.end_row();
-            for (b, (band, vals)) in specs
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(values.as_chunks::<4>().0)
-                .enumerate()
-            {
-                ui.label(format!("{}", b + 1));
-                let on = vals[0].round() as i32 != 0;
-                let has_gain = matches!(vals[0].round() as i32, 1..=3);
-                for (k, (spec, &v)) in band.iter().zip(vals).enumerate() {
-                    let mut v = v;
-                    let enabled = k == 0 || (on && (k != 2 || has_gain));
-                    ui.add_enabled_ui(enabled, |ui| {
-                        ui.spacing_mut().slider_width = 110.0;
-                        if param(ui, spec, &mut v, id) {
-                            changes.push((spec.key, v));
+            egui::Grid::new(("eq", id))
+                .num_columns(5)
+                .spacing([12.0, 6.0])
+                .min_col_width(0.0)
+                .show(ui, |ui| {
+                    for h in ["", "Type", "Frequency", "Gain", "Q"] {
+                        ui.label(RichText::new(h).small().weak());
+                    }
+                    ui.end_row();
+                    for (b, (band, vals)) in specs
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(values.as_chunks::<4>().0)
+                        .enumerate()
+                    {
+                        ui.label(format!("{}", b + 1));
+                        let on = vals[0].round() as i32 != 0;
+                        let has_gain = matches!(vals[0].round() as i32, 1..=3);
+                        for (k, (spec, &v)) in band.iter().zip(vals).enumerate() {
+                            let mut v = v;
+                            let enabled = k == 0 || (on && (k != 2 || has_gain));
+                            ui.add_enabled_ui(enabled, |ui| {
+                                ui.spacing_mut().slider_width = slider_w;
+                                // Same width for every band, "Peak" and "High shelf" alike.
+                                ui.spacing_mut().combo_width = 116.0;
+                                if param(ui, spec, &mut v, id) {
+                                    changes.push((spec.key, v));
+                                }
+                            });
                         }
-                    });
-                }
-                ui.end_row();
-            }
+                        ui.end_row();
+                    }
+                });
         });
 }
 

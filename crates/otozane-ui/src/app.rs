@@ -339,7 +339,13 @@ impl App {
 
         // Hero: what is happening right now, and the master switch.
         card(ui, |ui| {
-            ui.horizontal(|ui| {
+            let from = client::Mode::of(&st);
+            let mut mode = from;
+            let mut changed = false;
+            // The mode switch takes about 360 px; next to the status it would cover
+            // the title, so narrow windows put it on its own line.
+            let stacked = ui.available_width() < 600.0;
+            let status = |ui: &mut Ui| {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(52.0, 52.0), egui::Sense::hover());
                 ui.painter()
@@ -360,24 +366,39 @@ impl App {
                 ui.vertical(|ui| {
                     ui.add_space(4.0);
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(widgets::medium(title).size(20.0));
+                    ui.add(egui::Label::new(widgets::medium(title).size(20.0)).truncate());
                     let sub = if detail.is_empty() {
                         "No input".to_string()
                     } else {
-                        detail
+                        detail.clone()
                     };
-                    ui.label(RichText::new(sub).weak());
+                    ui.add(egui::Label::new(RichText::new(sub).weak()).truncate());
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let from = client::Mode::of(&st);
-                    let mut mode = from;
-                    if widgets::segmented(ui, &mut mode, &client::Mode::ALL) {
-                        for req in mode.requests(from) {
-                            self.send(req);
-                        }
-                    }
-                });
+            };
+            ui.horizontal(|ui| {
+                // Row as tall as the status icon, so the switch centers on it.
+                ui.set_min_height(52.0);
+                if stacked {
+                    status(ui);
+                } else {
+                    // Switch first, so the status gets only the width left of it.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        changed = widgets::segmented(ui, &mut mode, &client::Mode::ALL);
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), status);
+                    });
+                }
             });
+            if stacked {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    changed = widgets::segmented(ui, &mut mode, &client::Mode::ALL);
+                });
+            }
+            if changed {
+                for req in mode.requests(from) {
+                    self.send(req);
+                }
+            }
             ui.add_space(8.0);
             widgets::divider(ui);
             ui.add_space(4.0);
@@ -504,8 +525,16 @@ impl App {
                     .min_size(egui::vec2(0.0, 32.0)),
             )
         };
+        // As tall as a chip, so an arrow that wraps to a new line stays centered on it.
         let arrow = |ui: &mut Ui| {
-            ui.label(icon(icons::ARROW_RIGHT, 14.0).color(p.text_weak));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 32.0), egui::Sense::hover());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icons::ARROW_RIGHT,
+                egui::FontId::proportional(14.0),
+                p.text_weak,
+            );
         };
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
@@ -680,9 +709,17 @@ impl App {
                         ui.label(name);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if !is_active
-                            && widgets::icon_button(ui, icons::TRASH_2, "Delete").clicked()
-                        {
+                        // The active profile cannot be deleted. Its button is hidden
+                        // but keeps its place, so the icons line up across rows.
+                        let delete = ui
+                            .scope(|ui| {
+                                if is_active {
+                                    ui.set_invisible();
+                                }
+                                widgets::icon_button(ui, icons::TRASH_2, "Delete")
+                            })
+                            .inner;
+                        if !is_active && delete.clicked() {
                             self.send(Request::DeleteProfile { name: name.clone() });
                         }
                         if widgets::icon_button(ui, icons::DOWNLOAD, "Export to a file").clicked() {

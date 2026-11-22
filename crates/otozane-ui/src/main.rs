@@ -86,8 +86,12 @@ fn options() -> eframe::NativeOptions {
         options.viewport.with_decorations(false)
     };
     // Screenshots get a fixed size; tiling compositors (niri) float such windows.
+    // OTOZANE_SCREENSHOT_SIZE=WxH overrides it, e.g. to check the minimum width.
     if std::env::var_os("OTOZANE_SCREENSHOT").is_some() {
-        let size = [1100.0, 720.0];
+        let size = std::env::var("OTOZANE_SCREENSHOT_SIZE")
+            .ok()
+            .and_then(|s| parse_size(&s))
+            .unwrap_or([1100.0, 720.0]);
         options.viewport = options
             .viewport
             .with_inner_size(size)
@@ -96,6 +100,18 @@ fn options() -> eframe::NativeOptions {
             .with_resizable(false);
     }
     options
+}
+
+/// Parses `WxH` into a window size. Returns None unless both sides are finite and positive.
+fn parse_size(s: &str) -> Option<[f32; 2]> {
+    let (w, h) = s.split_once('x')?;
+    let side = |v: &str| {
+        v.trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite() && *v > 0.0)
+    };
+    Some([side(w)?, side(h)?])
 }
 
 #[cfg(target_os = "macos")]
@@ -149,4 +165,19 @@ fn main() -> eframe::Result {
         window(Some(&tray))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_size;
+
+    #[test]
+    fn screenshot_size_needs_positive_finite_sides() {
+        assert_eq!(parse_size("720x480"), Some([720.0, 480.0]));
+        for bad in [
+            "0x480", "-5x480", "720x0", "720x-1", "infx480", "NaNx480", "720", "x",
+        ] {
+            assert_eq!(parse_size(bad), None, "{bad}");
+        }
+    }
 }

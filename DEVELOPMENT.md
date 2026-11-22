@@ -50,7 +50,7 @@ path, also used by the UI and `scripts/ipc.py`) and `OTOZANE_NODE_PREFIX`
 | `scripts/tone.py OUT.wav SECONDS AMP [noise]` | Writes a 1 kHz sine or white noise test file. |
 | `scripts/analyze.py FILE.wav` | Peak and RMS per 100 ms block. |
 | `scripts/ipc.py JSON...` | Sends raw requests to the running service. |
-| `scripts/screenshot.sh OUT.png [page] [dark\|light]` | Renders the UI and saves a screenshot (uses `OTOZANE_SCREENSHOT`, `OTOZANE_PAGE`, `OTOZANE_THEME`). |
+| `scripts/screenshot.sh OUT.png [page] [dark\|light]` | Renders the UI and saves a screenshot (uses `OTOZANE_SCREENSHOT`, `OTOZANE_PAGE`, `OTOZANE_THEME`; `OTOZANE_SCREENSHOT_SIZE=720x480` sets the window size). |
 | `scripts/icons.py` | Regenerates the Lucide font subset and `src/icons.rs`. |
 | `scripts/fetch-ysfx.sh [OUT_DIR]` | Fetches the pinned ysfx commit with its submodules (default `third_party/ysfx`). `otozane-plugins/build.rs` builds it with CMake; without it JSFX plugins fail to load with "built without JSFX support". |
 | `scripts/build-hush.sh [OUT_DIR]` | Builds `libweya_nc.so` from the pinned Hush commit and copies it with the model and licences (default `third_party/hush`). `OTOZANE_HUSH_DIR` points the service at another directory. |

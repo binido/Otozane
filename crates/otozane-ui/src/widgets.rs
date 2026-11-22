@@ -81,24 +81,30 @@ pub fn row(ui: &mut Ui, title: &str, subtitle: Option<&str>, controls: impl FnOn
     let min_h = if subtitle.is_some() { 44.0 } else { 36.0 };
     let (row_h, text_h): (f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or((min_h, min_h));
     let size = Vec2::new(ui.available_width(), row_h);
+    // Controls first, right to left, so the text wraps in the width left of them
+    // instead of running under them in narrow windows.
     let measured = ui
-        .allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+        .allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
             ui.set_min_height(row_h);
-            let text = ui
-                .vertical(|ui| {
-                    ui.add_space(((row_h - text_h) / 2.0).max(0.0));
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    let mut rect = ui.label(title).rect;
-                    if let Some(s) = subtitle {
-                        rect = rect.union(ui.label(RichText::new(s).small().weak()).rect);
-                    }
-                    rect.height()
-                })
-                .inner;
             let ctrl = ui
-                .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                .scope(|ui| {
                     controls(ui);
                     ui.min_rect().height()
+                })
+                .inner;
+            ui.add_space(8.0);
+            let text = ui
+                .with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.vertical(|ui| {
+                        ui.add_space(((row_h - text_h) / 2.0).max(0.0));
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        let mut rect = ui.label(title).rect;
+                        if let Some(s) = subtitle {
+                            rect = rect.union(ui.label(RichText::new(s).small().weak()).rect);
+                        }
+                        rect.height()
+                    })
+                    .inner
                 })
                 .inner;
             (text.max(ctrl).max(min_h), text)
@@ -154,13 +160,22 @@ pub fn icon_button(ui: &mut Ui, glyph: &str, tip: &str) -> Response {
     .on_hover_text(tip)
 }
 
-/// Pill-shaped label, e.g. "Active" or a live reading.
-pub fn badge(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
-    let galley = ui.painter().layout_no_wrap(
+fn badge_galley(ui: &Ui, text: &str, fg: Color32) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_no_wrap(
         text.to_string(),
         FontId::new(12.0, FontFamily::Name(MEDIUM.into())),
         fg,
-    );
+    )
+}
+
+/// Size a [`badge`] with this text takes.
+pub fn badge_size(ui: &Ui, text: &str) -> Vec2 {
+    badge_galley(ui, text, Color32::PLACEHOLDER).size() + Vec2::new(16.0, 6.0)
+}
+
+/// Pill-shaped label, e.g. "Active" or a live reading.
+pub fn badge(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
+    let galley = badge_galley(ui, text, fg);
     let size = galley.size() + Vec2::new(16.0, 6.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
@@ -178,6 +193,25 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
         {
             let n = options.len();
             let mut rects = Vec::new();
+            // Equal segments, wide enough for any label with the check mark.
+            // Otherwise the group changes width and shifts as the selection moves.
+            let pad = ui.spacing().button_padding.x;
+            let seg_w = options
+                .iter()
+                .map(|&(_, label)| {
+                    egui::WidgetText::from(checked_label(label))
+                        .into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Extend),
+                            f32::INFINITY,
+                            egui::TextStyle::Button,
+                        )
+                        .size()
+                        .x
+                        + 2.0 * pad
+                })
+                .fold(96.0, f32::max)
+                .ceil();
             // In a right-to-left row add the last option first, so the
             // segments still read left to right.
             let mut order: Vec<usize> = (0..n).collect();
@@ -188,7 +222,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
                 let (v, label) = options[k];
                 let on = *value == v;
                 let text = if on {
-                    medium(format!("{}  {label}", crate::icons::CHECK))
+                    checked_label(label)
                 } else {
                     RichText::new(label)
                 };
@@ -207,7 +241,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
                     })
                     .frame_when_inactive(on)
                     .corner_radius(radius)
-                    .min_size(Vec2::new(96.0, 40.0));
+                    .min_size(Vec2::new(seg_w, 40.0));
                 let resp = ui.add(b);
                 if resp.clicked() && !on {
                     *value = v;
@@ -221,12 +255,21 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
             let s = Stroke::new(1.0, p.outline);
             ui.painter()
                 .rect_stroke(all, 20.0, s, egui::StrokeKind::Inside);
+            // Dividers on a pixel center and inside the outline, so they stay
+            // as thin as the outline and do not cross it.
+            let y = all.y_range().shrink(s.width);
             for r in &rects[1..] {
-                ui.painter().vline(r.left(), r.y_range(), s);
+                let x = ui.painter().round_to_pixel_center(r.left());
+                ui.painter().vline(x, y, s);
             }
         }
     });
     changed
+}
+
+/// Selected segment label: check mark, then the label in medium weight.
+fn checked_label(label: &str) -> RichText {
+    medium(format!("{}  {label}", crate::icons::CHECK))
 }
 
 /// M3 switch: outlined track with a small thumb when off, filled track with
