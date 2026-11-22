@@ -204,7 +204,10 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                 if let Some(e) = &info.error {
                     ui.label(RichText::new(icon_text(icons::CIRCLE_ALERT, e)).color(p.error));
                 }
-                if expanded {
+                // A plugin that failed to load has nothing under its error line.
+                let failed =
+                    kind == EffectKind::Plugin && info.error.is_some() && info.params.is_empty();
+                if expanded && !failed {
                     ui.add_space(6.0);
                     widgets::divider(ui);
                     ui.add_space(6.0);
