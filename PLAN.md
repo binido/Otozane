@@ -27,6 +27,7 @@ Status legend: [x] done, [~] partial, [ ] not started.
 
 ## Next steps
 
+- Tray and menu bar icon reflect the state: a separate variant of `packaging/tray.svg` for Muted, Bypassed and Service stopped (Linux `icon_name`/pixmap, macOS template), switched by the existing status poll.
 - JSFX via ysfx.
 - Tune the Voice preset on real speech (not verified on a speech recording yet).
 - Optional resampling-based drift correction instead of dropping frames.

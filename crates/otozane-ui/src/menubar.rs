@@ -50,7 +50,8 @@ pub fn spawn() -> Result<(), String> {
     menu.append(&quit).map_err(|e| e.to_string())?;
 
     // Black on transparent, macOS recolours it for a light or dark menu bar.
-    let png = include_bytes!("../assets/menubar.png");
+    // `rsvg-convert packaging/tray.svg -o crates/otozane-ui/assets/tray.png`
+    let png = include_bytes!("../assets/tray.png");
     let icon = eframe::icon_data::from_png_bytes(png).map_err(|e| e.to_string())?;
     let icon = Icon::from_rgba(icon.rgba, icon.width, icon.height).map_err(|e| e.to_string())?;
     let tray = TrayIconBuilder::new()
