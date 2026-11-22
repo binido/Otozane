@@ -143,46 +143,17 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                         fg,
                     );
                     ui.add_space(4.0);
-                    let chevron = if expanded {
-                        icons::CHEVRON_DOWN
-                    } else {
-                        icons::CHEVRON_RIGHT
-                    };
-                    let mut title =
-                        widgets::medium(format!("{}  {chevron}", app.chain[i].display_name()));
-                    if !on {
-                        title = title.weak();
-                    }
-                    if ui
-                        .add(egui::Label::new(title).sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        if expanded {
-                            app.collapsed.insert(id);
-                        } else {
-                            app.collapsed.remove(&id);
-                        }
-                    }
-                    if !on {
-                        widgets::badge(ui, "Bypassed", p.text_weak, p.raised);
-                    } else if let (Some((label, unit)), Some(v)) = (kind.meter(), meters.get(i)) {
-                        widgets::badge(
-                            ui,
-                            &format!("{label} {v:.0} {unit}"),
-                            p.text_weak,
-                            p.raised,
-                        );
-                    }
+                    // Buttons first, right to left, so the title and badge get only the
+                    // width left of them.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mut on = on;
-                        if widgets::switch(ui, &mut on)
+                        let mut enabled = on;
+                        if widgets::switch(ui, &mut enabled)
                             .on_hover_text("Enable or bypass")
                             .changed()
                         {
-                            app.chain[i].enabled = on;
+                            app.chain[i].enabled = enabled;
                             app.edited();
-                            app.send(Request::SetEffectEnabled { id, enabled: on });
+                            app.send(Request::SetEffectEnabled { id, enabled });
                         }
                         ui.add_space(6.0);
                         if widgets::icon_button(ui, icons::TRASH_2, "Remove").clicked() {
@@ -196,6 +167,51 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                         ui.add_enabled_ui(i > 0, |ui| {
                             if widgets::icon_button(ui, icons::ARROW_UP, "Move up").clicked() {
                                 action = Some(Action::Move(i, i - 1));
+                            }
+                        });
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let chevron = if expanded {
+                                icons::CHEVRON_DOWN
+                            } else {
+                                icons::CHEVRON_RIGHT
+                            };
+                            let mut title = widgets::medium(format!(
+                                "{}  {chevron}",
+                                app.chain[i].display_name()
+                            ));
+                            if !on {
+                                title = title.weak();
+                            }
+                            if ui
+                                .add(
+                                    egui::Label::new(title)
+                                        .sense(egui::Sense::click())
+                                        .truncate(),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                if expanded {
+                                    app.collapsed.insert(id);
+                                } else {
+                                    app.collapsed.remove(&id);
+                                }
+                            }
+                            let badge = if !on {
+                                Some("Bypassed".to_string())
+                            } else if let (Some((label, unit)), Some(v)) =
+                                (kind.meter(), meters.get(i))
+                            {
+                                Some(format!("{label} {v:.0} {unit}"))
+                            } else {
+                                None
+                            };
+                            // The badge only repeats what the switch or the parameters show,
+                            // so it is left out when it does not fit next to the title.
+                            if let Some(text) = badge
+                                && ui.available_width() >= widgets::badge_size(ui, &text).x
+                            {
+                                widgets::badge(ui, &text, p.text_weak, p.raised);
                             }
                         });
                     });

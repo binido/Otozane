@@ -160,13 +160,22 @@ pub fn icon_button(ui: &mut Ui, glyph: &str, tip: &str) -> Response {
     .on_hover_text(tip)
 }
 
-/// Pill-shaped label, e.g. "Active" or a live reading.
-pub fn badge(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
-    let galley = ui.painter().layout_no_wrap(
+fn badge_galley(ui: &Ui, text: &str, fg: Color32) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_no_wrap(
         text.to_string(),
         FontId::new(12.0, FontFamily::Name(MEDIUM.into())),
         fg,
-    );
+    )
+}
+
+/// Size a [`badge`] with this text takes.
+pub fn badge_size(ui: &Ui, text: &str) -> Vec2 {
+    badge_galley(ui, text, Color32::PLACEHOLDER).size() + Vec2::new(16.0, 6.0)
+}
+
+/// Pill-shaped label, e.g. "Active" or a live reading.
+pub fn badge(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
+    let galley = badge_galley(ui, text, fg);
     let size = galley.size() + Vec2::new(16.0, 6.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
