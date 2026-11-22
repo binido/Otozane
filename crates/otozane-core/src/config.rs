@@ -182,6 +182,7 @@ pub struct Settings {
     /// system default source (see `otozane_pipewire`).
     pub input_device: Option<String>,
     pub processing_enabled: bool,
+    pub stop_on_close: bool,
     pub active_profile: String,
     /// Capture channel count: 1 (mono) or 2 (stereo).
     pub channels: u32,
@@ -194,6 +195,7 @@ impl Default for Settings {
         Self {
             input_device: None,
             processing_enabled: true,
+            stop_on_close: false,
             active_profile: "Default".into(),
             channels: 1,
             plugin_dirs: Vec::new(),

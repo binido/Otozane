@@ -100,6 +100,7 @@ struct Desired {
 pub struct Backend {
     tx: SharedSender,
     desired: Arc<Mutex<Desired>>,
+    stopping: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     pub status: Arc<Mutex<Status>>,
     pub counters: Arc<Counters>,
@@ -133,6 +134,8 @@ impl Backend {
             channels,
         }));
         let (tx2, desired2) = (tx.clone(), desired.clone());
+        let stopping = Arc::new(AtomicBool::new(false));
+        let stopping2 = stopping.clone();
         let thread = std::thread::Builder::new()
             .name("otozane-pipewire".into())
             .spawn(move || {
@@ -140,6 +143,9 @@ impl Backend {
                 loop {
                     let (sender, rx) = pw::channel::channel();
                     *tx2.lock().unwrap() = Some(sender);
+                    if stopping2.load(Ordering::Acquire) {
+                        return;
+                    }
                     // Read after the sender is installed: later changes arrive as commands.
                     let desired = desired2.lock().unwrap().clone();
                     match run(&shared, rx, desired) {
@@ -156,6 +162,7 @@ impl Backend {
         Self {
             tx,
             desired,
+            stopping,
             thread: Some(thread),
             status,
             counters,
@@ -197,6 +204,7 @@ impl Backend {
 
 impl Drop for Backend {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
         self.send(Command::Quit);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -405,7 +413,7 @@ fn run(
         })
         .register();
 
-    let (_virtual_node, _playback, _playback_listener) = create_playback(&core, shared)?;
+    let (_playback, _playback_listener) = create_playback(&core, shared)?;
 
     let state = Rc::new(RefCell::new(Main {
         core: core.clone(),
@@ -803,15 +811,38 @@ fn create_monitor(
     Ok((stream, listener))
 }
 
-fn create_playback(
-    core: &pw::core::CoreRc,
-    shared: &Shared,
-) -> Result<(pw::node::Node, StreamRc, StreamListener<()>), pw::Error> {
-    // The virtual microphone itself: a null-audio-sink adapter exposed as a
-    // source, the same construction EasyEffects uses. `object.linger = false`
-    // ties its lifetime to our connection, so PipeWire removes it when the
-    // service exits or crashes.
-    let node: pw::node::Node = core.create_object(
+pub fn start_virtual_microphone() {
+    std::thread::Builder::new()
+        .name("otozane-microphone".into())
+        .spawn(|| {
+            pw::init();
+            loop {
+                if let Err(e) = hold_virtual_microphone() {
+                    eprintln!("PipeWire virtual microphone: {e}");
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        })
+        .expect("failed to spawn PipeWire virtual microphone thread");
+}
+
+fn hold_virtual_microphone() -> Result<(), pw::Error> {
+    let mainloop = pw::main_loop::MainLoopRc::new(None)?;
+    let context = pw::context::ContextRc::new(
+        &mainloop,
+        Some(properties! { *pw::keys::APP_NAME => "Otozane Microphone" }),
+    )?;
+    let core = context.connect_rc(None)?;
+    let ml = mainloop.clone();
+    let _listener = core
+        .add_listener_local()
+        .error(move |_, _, _, message| {
+            eprintln!("PipeWire virtual microphone: {message}");
+            ml.quit();
+        })
+        .register();
+    // The node follows this connection, which stays open between processing sessions.
+    let _node: pw::node::Node = core.create_object(
         "adapter",
         &properties! {
             "factory.name" => "support.null-audio-sink",
@@ -824,7 +855,14 @@ fn create_playback(
             "media.icon-name" => "audio-input-microphone",
         },
     )?;
-    // Playback stream feeding the virtual microphone.
+    mainloop.run();
+    Ok(())
+}
+
+fn create_playback(
+    core: &pw::core::CoreRc,
+    shared: &Shared,
+) -> Result<(StreamRc, StreamListener<()>), pw::Error> {
     let stream = StreamRc::new(
         core.clone(),
         "otozane-output",
@@ -882,7 +920,7 @@ fn create_playback(
         StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
         &mut params,
     )?;
-    Ok((node, stream, listener))
+    Ok((stream, listener))
 }
 
 fn data_chunk<'a>(buffer: &'a mut pw::buffer::Buffer<'_>) -> Option<&'a mut spa::buffer::Chunk> {

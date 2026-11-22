@@ -17,11 +17,37 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// Requests larger than this are rejected (a full chain is a few KiB).
 const MAX_LINE: u64 = 1 << 20;
+
+enum State {
+    Active(Box<Service>),
+    #[cfg(target_os = "linux")]
+    Holding,
+    Exiting,
+}
+
+struct Session {
+    state: Mutex<State>,
+    changed: Condvar,
+}
+
+impl State {
+    fn tick(&mut self) -> Option<Duration> {
+        match self {
+            Self::Active(svc) => {
+                svc.tick();
+                Some(Duration::from_millis(100))
+            }
+            #[cfg(target_os = "linux")]
+            Self::Holding => Some(Duration::from_secs(1)),
+            Self::Exiting => None,
+        }
+    }
+}
 
 fn main() {
     if let Some(arg) = std::env::args().nth(1) {
@@ -59,6 +85,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let listener = UnixListener::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
 
+    #[cfg(target_os = "linux")]
+    let executable = std::env::current_exe()?;
+    #[cfg(target_os = "linux")]
+    backend::start_virtual_microphone();
+
+    let session = Arc::new(Session {
+        state: Mutex::new(State::Active(Box::new(start_processing()?))),
+        changed: Condvar::new(),
+    });
+    eprintln!(
+        "otozaned {} listening on {}",
+        env!("CARGO_PKG_VERSION"),
+        path.display()
+    );
+
+    let accept_session = session.clone();
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let session = accept_session.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = serve(conn, &session) {
+                    eprintln!("client error: {e}");
+                }
+            });
+        }
+    });
+
+    #[cfg(target_os = "linux")]
+    let mut checked = std::time::Instant::now();
+    let mut state = session.state.lock().unwrap();
+    while let Some(wait) = state.tick() {
+        #[cfg(target_os = "linux")]
+        if checked.elapsed() >= Duration::from_secs(1) {
+            // The microphone follows this process when a package removes its binary.
+            if !executable.exists() {
+                *state = State::Exiting;
+                break;
+            }
+            checked = std::time::Instant::now();
+        }
+        state = session.changed.wait_timeout(state, wait).unwrap().0;
+    }
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+fn start_processing() -> Result<Service, Box<dyn std::error::Error>> {
     let store = store::Store::new(store::config_dir());
     let mut settings = store.load_settings();
     settings.channels = settings.channels.clamp(1, 2);
@@ -90,41 +163,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !svc.store.dir().join("plugins.json").exists() {
         svc.start_scan();
     }
-    let svc = Arc::new(Mutex::new(svc));
-    eprintln!(
-        "otozaned {} listening on {}",
-        env!("CARGO_PKG_VERSION"),
-        path.display()
-    );
-
-    let accept_svc = svc.clone();
-    std::thread::spawn(move || {
-        for conn in listener.incoming().flatten() {
-            let svc = accept_svc.clone();
-            std::thread::spawn(move || {
-                if let Err(e) = serve(conn, &svc) {
-                    eprintln!("client error: {e}");
-                }
-            });
-        }
-    });
-
-    loop {
-        std::thread::sleep(Duration::from_millis(100));
-        let mut s = svc.lock().unwrap();
-        s.tick();
-        if s.quit {
-            break;
-        }
-    }
-    let _ = std::fs::remove_file(&path);
-    // Dropping the service drops the backend, which stops its streams.
-    let svc = Arc::try_unwrap(svc).ok();
-    drop(svc);
-    Ok(())
+    Ok(svc)
 }
 
-fn serve(conn: UnixStream, svc: &Mutex<Service>) -> std::io::Result<()> {
+impl Session {
+    fn handle(&self, req: Request, writer: &mut UnixStream) -> std::io::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        let response = match &mut *state {
+            State::Active(svc) => {
+                let shutdown = req == Request::Shutdown;
+                let response = svc.handle(req);
+                if shutdown {
+                    #[cfg(target_os = "linux")]
+                    let next = if svc.settings.stop_on_close {
+                        State::Holding
+                    } else {
+                        State::Exiting
+                    };
+                    #[cfg(target_os = "macos")]
+                    let next = State::Exiting;
+                    *state = next;
+                    // Send the reply before the main thread can exit.
+                    let result = write_response(writer, &response);
+                    self.changed.notify_one();
+                    return result;
+                }
+                response
+            }
+            #[cfg(target_os = "linux")]
+            State::Holding if req == Request::Start => match start_processing() {
+                Ok(svc) => {
+                    *state = State::Active(Box::new(svc));
+                    self.changed.notify_one();
+                    Response::Ok
+                }
+                Err(e) => Response::Error {
+                    message: e.to_string(),
+                },
+            },
+            #[cfg(target_os = "linux")]
+            State::Holding => Response::Stopped,
+            State::Exiting => Response::Stopped,
+        };
+        drop(state);
+        write_response(writer, &response)
+    }
+}
+
+fn serve(conn: UnixStream, session: &Session) -> std::io::Result<()> {
     let mut writer = conn.try_clone()?;
     let mut reader = BufReader::new(conn);
     loop {
@@ -136,14 +222,20 @@ fn serve(conn: UnixStream, svc: &Mutex<Service>) -> std::io::Result<()> {
         if !line.ends_with('\n') {
             return Err(std::io::Error::other("request too long"));
         }
-        let resp = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => svc.lock().unwrap().handle(req),
-            Err(e) => Response::Error {
-                message: format!("invalid request: {e}"),
-            },
-        };
-        let mut out = serde_json::to_string(&resp)?;
-        out.push('\n');
-        writer.write_all(out.as_bytes())?;
+        match serde_json::from_str::<Request>(&line) {
+            Ok(req) => session.handle(req, &mut writer)?,
+            Err(e) => write_response(
+                &mut writer,
+                &Response::Error {
+                    message: format!("invalid request: {e}"),
+                },
+            )?,
+        }
     }
+}
+
+fn write_response(writer: &mut UnixStream, response: &Response) -> std::io::Result<()> {
+    let mut out = serde_json::to_string(response)?;
+    out.push('\n');
+    writer.write_all(out.as_bytes())
 }

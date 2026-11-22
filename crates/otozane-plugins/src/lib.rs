@@ -67,7 +67,11 @@ pub fn scan_bundle(path: &std::path::Path) -> Result<Vec<PluginInfo>, String> {
 /// Scans every VST3 bundle in `dirs`, each in its own `scanner --scan PATH`
 /// process, so a plugin that crashes or hangs while loading only fails its
 /// own entry. JSFX scripts are only parsed, so they are read in this process.
-pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> PluginList {
+pub fn scan_dirs(
+    dirs: &[std::path::PathBuf],
+    scanner: &std::path::Path,
+    cancelled: impl Fn() -> bool,
+) -> Option<PluginList> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     const TIMEOUT: Duration = Duration::from_secs(20);
@@ -78,6 +82,9 @@ pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> Plug
     let bundles: std::collections::BTreeSet<_> =
         dirs.iter().flat_map(|d| vst3::find_bundles(d)).collect();
     for bundle in bundles {
+        if cancelled() {
+            return None;
+        }
         let name = bundle.display().to_string();
         let child = Command::new(scanner)
             .arg("--scan")
@@ -105,7 +112,7 @@ pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> Plug
         let status = loop {
             match child.try_wait() {
                 Ok(Some(s)) => break Some(s),
-                Ok(None) if start.elapsed() < TIMEOUT => {
+                Ok(None) if start.elapsed() < TIMEOUT && !cancelled() => {
                     std::thread::sleep(Duration::from_millis(20))
                 }
                 _ => {
@@ -136,6 +143,9 @@ pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> Plug
     let scripts: std::collections::BTreeSet<_> =
         dirs.iter().flat_map(|d| jsfx::find_scripts(d)).collect();
     for script in scripts {
+        if cancelled() {
+            return None;
+        }
         match jsfx::scan(&script) {
             Ok((plugin, category)) => list.plugins.push(PluginInfo { plugin, category }),
             Err(e) => list.errors.push((script.display().to_string(), e)),
@@ -147,7 +157,7 @@ pub fn scan_dirs(dirs: &[std::path::PathBuf], scanner: &std::path::Path) -> Plug
             .to_lowercase()
             .cmp(&b.plugin.name.to_lowercase())
     });
-    list
+    (!cancelled()).then_some(list)
 }
 
 /// Standard plugin directories plus `extra`.

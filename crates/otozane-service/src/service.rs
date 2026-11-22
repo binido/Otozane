@@ -8,8 +8,9 @@ use otozane_core::engine::{ControlError, Controller, External};
 use otozane_core::protocol::{self, Diagnostics, EffectInfo, PluginList, Request, Response};
 use otozane_plugins::PluginControl;
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub struct Service {
@@ -21,13 +22,13 @@ pub struct Service {
     /// Control halves of loaded plugins, by effect id.
     plugins: HashMap<u64, Box<dyn PluginControl>>,
     scan: Arc<Mutex<PluginList>>,
+    scan_thread: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
     dirty_settings: bool,
     /// Capture stopped on request. Not saved: a restart always unmutes.
     muted: bool,
     /// Monitor playback on. Not saved, so speakers never start feeding back.
     monitoring: bool,
     dirty_profile: bool,
-    pub quit: bool,
 }
 
 fn err(e: impl std::fmt::Display) -> Response {
@@ -50,11 +51,11 @@ impl Service {
             chain: Vec::new(),
             plugins: HashMap::new(),
             scan: Arc::new(Mutex::new(scan)),
+            scan_thread: None,
             dirty_settings: false,
             muted: false,
             monitoring: false,
             dirty_profile: false,
-            quit: false,
         }
     }
 
@@ -205,6 +206,19 @@ impl Service {
     pub fn handle(&mut self, req: Request) -> Response {
         match req {
             Request::Status => Response::Status(Box::new(self.status())),
+            Request::Start => Response::Ok,
+            Request::SetStopOnClose { enabled } => {
+                let mut settings = self.settings.clone();
+                settings.stop_on_close = enabled;
+                match self.store.save_settings(&settings) {
+                    Ok(()) => {
+                        self.settings = settings;
+                        self.dirty_settings = false;
+                        Response::Ok
+                    }
+                    Err(e) => err(e),
+                }
+            }
             Request::SetInput { device } => {
                 if device.as_deref() == Some(crate::backend::virtual_node_name()) {
                     return err(format!(
@@ -353,7 +367,7 @@ impl Service {
                 Response::Ok
             }
             Request::Shutdown => {
-                self.quit = true;
+                self.flush();
                 Response::Ok
             }
         }
@@ -361,7 +375,7 @@ impl Service {
 
     /// Rescans plugin directories on a background thread. Each bundle is
     /// loaded by a separate `otozaned --scan` process.
-    pub fn start_scan(&self) {
+    pub fn start_scan(&mut self) {
         {
             let mut s = self.scan.lock().unwrap();
             if s.scanning {
@@ -372,14 +386,20 @@ impl Service {
         let scan = self.scan.clone();
         let dirs = otozane_plugins::search_dirs(&self.settings.plugin_dirs);
         let cache = self.store.dir().join("plugins.json");
-        std::thread::spawn(move || {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancelled = cancel.clone();
+        let thread = std::thread::spawn(move || {
             let exe = std::env::current_exe().unwrap_or_else(|_| "otozaned".into());
-            let list = otozane_plugins::scan_dirs(&dirs, &exe);
-            if let Ok(json) = serde_json::to_string_pretty(&list) {
-                let _ = std::fs::write(&cache, json);
+            if let Some(list) =
+                otozane_plugins::scan_dirs(&dirs, &exe, || cancelled.load(Ordering::Relaxed))
+            {
+                if let Ok(json) = serde_json::to_string_pretty(&list) {
+                    let _ = std::fs::write(&cache, json);
+                }
+                *scan.lock().unwrap() = list;
             }
-            *scan.lock().unwrap() = list;
         });
+        self.scan_thread = Some((cancel, thread));
     }
 
     fn effect_info(&self, e: &EffectConfig) -> EffectInfo {
@@ -429,6 +449,7 @@ impl Service {
                 .collect(),
             virtual_source_ready: st.virtual_source_ready,
             processing_enabled: shared.processing_enabled.load(Ordering::Relaxed),
+            stop_on_close: self.settings.stop_on_close,
             muted: self.muted,
             monitoring: self.monitoring,
             input_peak: shared.input_peak.swap(0.0),
@@ -449,6 +470,15 @@ impl Service {
                 skipped_frames: c.skipped_frames.load(Ordering::Relaxed),
                 processed_blocks: shared.blocks.load(Ordering::Relaxed),
             },
+        }
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        if let Some((cancel, thread)) = self.scan_thread.take() {
+            cancel.store(true, Ordering::Relaxed);
+            let _ = thread.join();
         }
     }
 }
