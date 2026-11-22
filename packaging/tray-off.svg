@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 20 176 216" width="36" height="44">
+<style id="current-color-scheme">.ColorScheme-Text{color:#000}</style>
+<mask id="cut" maskUnits="userSpaceOnUse" x="40" y="20" width="176" height="216">
+<rect x="40" y="20" width="176" height="216" fill="#fff"/>
+<line x1="62" y1="42" x2="194" y2="214" stroke-linecap="round" stroke="#000" stroke-width="46"/>
+</mask>
+<g class="ColorScheme-Text" fill="currentColor">
+<g mask="url(#cut)">
+<path d="M96 68 A32 32 0 0 1 160 68 L160 89.42 C146.78 98.70 138.10 97.10 128 87 C117.90 76.90 109.22 75.30 96 84.58 Z"/>
+<path d="M160 120 A32 32 0 0 1 96 120 L96 106.58 C109.22 97.30 117.90 98.90 128 109 C138.10 119.10 146.78 120.70 160 111.42 Z"/>
+<path d="M74 122 A54 54 0 0 0 182 122 M128 176 V206 M98 210 H158" fill="none" stroke="currentColor" stroke-width="18" stroke-linecap="round"/>
+</g>
+<line x1="62" y1="42" x2="194" y2="214" stroke-linecap="round" stroke="currentColor" stroke-width="18"/>
+</g>
+</svg>

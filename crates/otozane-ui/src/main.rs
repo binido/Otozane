@@ -26,6 +26,44 @@ pub fn icon() -> egui::IconData {
         .expect("bundled icon is a valid PNG")
 }
 
+/// A tray icon variant: black on transparent, recoloured by the host.
+pub struct TrayIcon {
+    /// Symbolic icon name on Linux.
+    pub name: &'static str,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub svg: &'static [u8],
+    pub png: &'static [u8],
+}
+
+// PNGs: `rsvg-convert packaging/<name>.svg -o crates/otozane-ui/assets/<name>.png`
+pub const TRAY_ICONS: [TrayIcon; 3] = [
+    TrayIcon {
+        name: "otozane-symbolic",
+        svg: include_bytes!("../../../packaging/tray.svg"),
+        png: include_bytes!("../assets/tray.png"),
+    },
+    TrayIcon {
+        name: "otozane-bypass-symbolic",
+        svg: include_bytes!("../../../packaging/tray-bypass.svg"),
+        png: include_bytes!("../assets/tray-bypass.png"),
+    },
+    TrayIcon {
+        name: "otozane-off-symbolic",
+        svg: include_bytes!("../../../packaging/tray-off.svg"),
+        png: include_bytes!("../assets/tray-off.png"),
+    },
+];
+
+/// Tray icon for a state label: crossed out when no processed audio comes
+/// out, dimmed while processing is bypassed.
+pub fn tray_icon(state: &str) -> &'static TrayIcon {
+    match state {
+        "Muted" | "Audio error" | "Service stopped" => &TRAY_ICONS[2],
+        "Bypassed" => &TRAY_ICONS[1],
+        _ => &TRAY_ICONS[0],
+    }
+}
+
 fn options() -> eframe::NativeOptions {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
