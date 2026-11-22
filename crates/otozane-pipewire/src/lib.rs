@@ -71,6 +71,7 @@ enum Command {
     SetInput(Option<String>),
     SetMuted(bool),
     SetMonitor(bool),
+    SetChannels(usize),
     Quit,
 }
 
@@ -96,7 +97,7 @@ pub struct Backend {
 impl Backend {
     /// Starts the PipeWire thread. `input` is the `node.name` of the
     /// microphone to capture, or `None` to follow the system default.
-    pub fn start(engine: Engine, input: Option<String>) -> Self {
+    pub fn start(engine: Engine, input: Option<String>, channels: usize) -> Self {
         let status = Arc::new(Mutex::new(Status::default()));
         let counters = Arc::new(Counters::default());
         let tx: SharedSender = Arc::default();
@@ -122,10 +123,18 @@ impl Backend {
                 let mut input = input;
                 let mut muted = false;
                 let mut monitoring = false;
+                let mut channels = channels;
                 loop {
                     let (sender, rx) = pw::channel::channel();
                     *tx2.lock().unwrap() = Some(sender);
-                    match run(&shared, rx, &mut input, &mut muted, &mut monitoring) {
+                    match run(
+                        &shared,
+                        rx,
+                        &mut input,
+                        &mut muted,
+                        &mut monitoring,
+                        &mut channels,
+                    ) {
                         Ok(true) => return,
                         Ok(false) => {}
                         Err(e) => shared.set_capture(CaptureState::Error(e.to_string())),
@@ -159,6 +168,11 @@ impl Backend {
     /// Takes effect asynchronously.
     pub fn set_monitor(&self, on: bool) {
         self.send(Command::SetMonitor(on));
+    }
+
+    /// Recreates the capture stream with `channels` channels. Takes effect asynchronously.
+    pub fn set_channels(&self, channels: usize) {
+        self.send(Command::SetChannels(channels));
     }
 
     fn send(&self, cmd: Command) {
@@ -197,6 +211,7 @@ impl Shared {
 
 struct Capture {
     target: String,
+    channels: usize,
     _stream: StreamRc,
     _listener: StreamListener<()>,
 }
@@ -207,6 +222,7 @@ struct Main {
     shared: Shared,
     desired: Option<String>,
     muted: bool,
+    channels: usize,
     devices: Vec<(u32, Device)>,
     /// System default source (`default.audio.source` metadata), if known.
     default_source: Option<String>,
@@ -329,7 +345,9 @@ impl Main {
                 )
             }
         };
-        if self.capture.as_ref().map(|c| &c.target) == target.as_ref() {
+        if self.capture.as_ref().map(|c| (&c.target, c.channels))
+            == target.as_ref().map(|t| (t, self.channels))
+        {
             return;
         }
         // Drop the old stream first: the engine can only be driven by one.
@@ -339,10 +357,9 @@ impl Main {
                 .set_capture(CaptureState::WaitingForDevice(self.desired.clone()));
             return;
         };
-        let channels = self.shared.rt.lock().unwrap().engine.channels();
         self.shared
             .set_capture(CaptureState::Connecting(target.clone()));
-        match create_capture(&self.core, &self.shared, &target, channels) {
+        match create_capture(&self.core, &self.shared, &target, self.channels) {
             Ok(c) => self.capture = Some(c),
             Err(e) => self.shared.set_capture(CaptureState::Error(e.to_string())),
         }
@@ -357,6 +374,7 @@ fn run(
     input: &mut Option<String>,
     muted: &mut bool,
     monitoring: &mut bool,
+    channels: &mut usize,
 ) -> Result<bool, pw::Error> {
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(
@@ -384,6 +402,7 @@ fn run(
         shared: shared.clone(),
         desired: input.clone(),
         muted: *muted,
+        channels: *channels,
         devices: Vec::new(),
         default_source: None,
         last_physical_default: None,
@@ -522,6 +541,11 @@ fn run(
             st.monitoring = on;
             st.reconcile_monitor();
         }
+        Command::SetChannels(n) => {
+            let mut st = s3.borrow_mut();
+            st.channels = n;
+            st.reconcile();
+        }
         Command::Quit => {
             q.set(true);
             ml.quit();
@@ -538,7 +562,7 @@ fn run(
         if cycles == last.get()
             && let Ok(mut rt) = pump.rt.try_lock()
         {
-            rt.engine.process_interleaved(&mut []);
+            rt.engine.pump();
         }
         last.set(cycles);
     });
@@ -551,6 +575,7 @@ fn run(
     *input = st.desired.clone();
     *muted = st.muted;
     *monitoring = st.monitoring;
+    *channels = st.channels;
     st.capture = None;
     st.monitor = None;
     shared.monitor_on.store(false, Ordering::Relaxed);
@@ -664,7 +689,7 @@ fn create_capture(
                 .capture_quantum
                 .store(frames as u32, Ordering::Relaxed);
             let Ok(mut rt) = rt.try_lock() else { return };
-            rt.engine.process_interleaved(samples);
+            rt.engine.process_interleaved(samples, channels);
             counters.capture_cycles.fetch_add(1, Ordering::Relaxed);
             if faded < FADE_IN_FRAMES {
                 for frame in samples.chunks_exact_mut(channels) {
@@ -695,6 +720,7 @@ fn create_capture(
     )?;
     Ok(Capture {
         target: target.to_string(),
+        channels,
         _stream: stream,
         _listener: listener,
     })

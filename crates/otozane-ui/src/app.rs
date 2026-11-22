@@ -867,22 +867,13 @@ impl App {
         card(ui, |ui| {
             self.device_row(ui, &st);
             widgets::divider(ui);
-            row(
-                ui,
-                "Format",
-                Some("Set `channels` in config.toml and restart the service to change"),
-                |ui| {
-                    let ch = if st.diagnostics.channels == 2 {
-                        "Stereo"
-                    } else {
-                        "Mono"
-                    };
-                    ui.label(format!(
-                        "{} kHz · {ch}",
-                        st.diagnostics.sample_rate as f32 / 1000.0
-                    ));
-                },
-            );
+            let rate = format!("{} kHz", st.diagnostics.sample_rate as f32 / 1000.0);
+            row(ui, "Format", Some(&rate), |ui| {
+                let mut channels = st.diagnostics.channels;
+                if widgets::segmented(ui, &mut channels, &[(1, "Mono"), (2, "Stereo")]) {
+                    self.send(Request::SetChannels { channels });
+                }
+            });
         });
         section(ui, "Diagnostics");
         card(ui, |ui| {

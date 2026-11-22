@@ -16,6 +16,12 @@ for the tagged version as the GitHub release notes and fails if it is missing.
   - A script that fails to compile shows the error on its effect card.
   - Scripts with graphics (`@gfx`) work, but their graphics are not shown.
     MIDI is not passed to scripts.
+- **Mono or Stereo without a restart.** Switch the format in **Settings →
+  Audio → Format**, the audio service applies it right away. Apps recording
+  from Otozane Microphone keep recording, with a short silence of a few tens of
+  milliseconds at the switch. Effects and plugins are rebuilt for the new
+  format and keep their settings.
+- `set_channels` IPC request (`{"cmd":"set_channels","channels":2}`).
 
 ## 0.4.0 - 2026-11-14
 

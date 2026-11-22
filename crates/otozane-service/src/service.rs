@@ -96,6 +96,27 @@ impl Service {
     }
 
     pub fn apply_chain(&mut self, chain: Vec<EffectConfig>) -> Result<(), String> {
+        self.build_chain(chain, self.settings.channels as usize)
+    }
+
+    /// Rebuilds the chain for a new channel count and recreates the capture stream.
+    fn set_channels(&mut self, channels: u32) -> Result<(), String> {
+        if !(1..=2).contains(&channels) {
+            return Err("channels must be 1 or 2".into());
+        }
+        if channels == self.settings.channels {
+            return Ok(());
+        }
+        // Plugins are recreated from the state saved into the chain.
+        self.capture_plugin_states();
+        self.build_chain(self.chain.clone(), channels as usize)?;
+        self.backend.set_channels(channels as usize);
+        self.settings.channels = channels;
+        self.dirty_settings = true;
+        Ok(())
+    }
+
+    fn build_chain(&mut self, chain: Vec<EffectConfig>, channels: usize) -> Result<(), String> {
         let mut ids = std::collections::HashSet::new();
         if !chain.iter().all(|e| ids.insert(e.id)) {
             return Err("effect ids must be unique".into());
@@ -116,7 +137,7 @@ impl Service {
         }
         // The audio thread takes updates once per cycle (or per 100 ms pump
         // when idle), so a burst of edits may briefly find the queue full.
-        let channels = self.settings.channels as usize;
+        let rebuild = channels != self.settings.channels as usize;
         let plugins = &mut self.plugins;
         let mut factory = |cfg: &EffectConfig| -> Result<External, String> {
             let plugin = cfg.plugin.as_ref().ok_or("plugin entry without a plugin")?;
@@ -138,7 +159,12 @@ impl Service {
         };
         let mut tries = 0;
         loop {
-            match self.ctl.set_chain(&chain, &mut factory) {
+            let r = if rebuild {
+                self.ctl.set_channels(channels, &chain, &mut factory)
+            } else {
+                self.ctl.set_chain(&chain, &mut factory)
+            };
+            match r {
                 Err(ControlError::Busy) if tries < 60 => {
                     tries += 1;
                     std::thread::sleep(Duration::from_millis(5));
@@ -201,6 +227,10 @@ impl Service {
                 self.monitoring = on;
                 Response::Ok
             }
+            Request::SetChannels { channels } => match self.set_channels(channels) {
+                Ok(()) => Response::Ok,
+                Err(e) => err(e),
+            },
             Request::SetChain { chain } => match self.apply_chain(chain) {
                 Ok(()) => Response::Ok,
                 Err(e) => err(e),

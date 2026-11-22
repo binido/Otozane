@@ -29,7 +29,6 @@ Status legend: [x] done, [~] partial, [ ] not started.
 
 - Tune the Voice preset on real speech (not verified on a speech recording yet).
 - Optional resampling-based drift correction instead of dropping frames.
-- Stereo/mono switch at runtime (currently needs a service restart).
 - Someday, lowest priority: JSFX `@gfx` windows (ysfx with LICE; frames would travel from otozaned to the UI over a separate binary channel, with mouse and keys back; gfx code runs beside the DSP, so the instance lock needs rework first; roughly 2-4 days). JSFX MIDI is not planned: the microphone chain has no MIDI source or sink.
 
 ## Key decisions
