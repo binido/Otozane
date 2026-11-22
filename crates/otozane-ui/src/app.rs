@@ -709,9 +709,17 @@ impl App {
                         ui.label(name);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if !is_active
-                            && widgets::icon_button(ui, icons::TRASH_2, "Delete").clicked()
-                        {
+                        // The active profile cannot be deleted. Its button is hidden
+                        // but keeps its place, so the icons line up across rows.
+                        let delete = ui
+                            .scope(|ui| {
+                                if is_active {
+                                    ui.set_invisible();
+                                }
+                                widgets::icon_button(ui, icons::TRASH_2, "Delete")
+                            })
+                            .inner;
+                        if !is_active && delete.clicked() {
                             self.send(Request::DeleteProfile { name: name.clone() });
                         }
                         if widgets::icon_button(ui, icons::DOWNLOAD, "Export to a file").clicked() {
