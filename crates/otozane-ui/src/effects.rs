@@ -6,7 +6,7 @@ use crate::theme;
 use crate::widgets::{self, icon, icon_text};
 use egui::{Margin, RichText, Stroke, Ui};
 use otozane_core::config::{EffectConfig, PluginRef, next_id};
-use otozane_core::effects::EffectKind;
+use otozane_core::effects::{EffectKind, hush};
 use otozane_core::param::{ParamKind, ParamSpec};
 use otozane_core::protocol::{EffectInfo, Request};
 
@@ -32,6 +32,24 @@ pub fn kind_icon(kind: EffectKind) -> &'static str {
 }
 
 const LABEL_W: f32 = 150.0;
+
+const AI_TIP: &str = "Uses a neural network to process the sound.";
+
+fn heavy_tip() -> String {
+    let ms = hush::LATENCY as f32 * 1000.0 / otozane_core::SAMPLE_RATE as f32;
+    format!("Costs noticeably more CPU and adds about {ms:.0} ms of latency.")
+}
+
+/// Draws the AI and Heavy badges the effect kind has, with hover text.
+fn kind_badges(ui: &mut Ui, kind: EffectKind) {
+    let p = theme::current(ui.ctx());
+    if kind.is_ai() {
+        widgets::badge(ui, "AI", p.accent, p.accent_soft).on_hover_text(AI_TIP);
+    }
+    if kind.is_heavy() {
+        widgets::badge(ui, "Heavy", p.text_weak, p.raised).on_hover_text(heavy_tip());
+    }
+}
 
 /// One parameter line: fixed-width label, then the control filling the rest,
 /// so sliders line up across all effect cards.
@@ -71,7 +89,21 @@ pub fn page(app: &mut App, ui: &mut Ui) {
             egui::containers::menu::MenuButton::from_button(add).ui(ui, |ui| {
                 ui.set_min_width(200.0);
                 for &kind in EffectKind::ALL {
-                    if ui.button(icon_text(kind_icon(kind), kind.name())).clicked() {
+                    let mut button = egui::Button::new(icon_text(kind_icon(kind), kind.name()));
+                    if kind.is_ai() {
+                        let tag = if kind.is_heavy() { "AI · Heavy" } else { "AI" };
+                        button = button.right_text(RichText::new(tag).weak());
+                    }
+                    let mut resp = ui.add(button);
+                    if kind.is_ai() {
+                        let tip = if kind.is_heavy() {
+                            format!("{AI_TIP}\n{}", heavy_tip())
+                        } else {
+                            AI_TIP.to_string()
+                        };
+                        resp = resp.on_hover_text(tip);
+                    }
+                    if resp.clicked() {
                         app_action(app, Action::Add(kind));
                     }
                 }
@@ -198,6 +230,7 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                                     app.collapsed.remove(&id);
                                 }
                             }
+                            kind_badges(ui, kind);
                             let badge = if !on {
                                 Some("Bypassed".to_string())
                             } else if let (Some((label, unit)), Some(v)) =
