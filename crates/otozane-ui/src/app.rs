@@ -789,18 +789,64 @@ impl App {
 
         section(ui, "Presets");
         card(ui, |ui| {
+            // The text is laid out up front, so a wrapped description sets the row height
+            // and wraps before the Create button instead of running under it.
+            let create = icon_text(icons::PLUS, "Create");
+            let gap = ui.spacing().item_spacing.x;
+            let button_w = egui::WidgetText::from(widgets::medium(create.as_str()))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .x
+                + 2.0 * ui.spacing().button_padding.x;
+            let w = ui.available_width() - 36.0 - button_w - 3.0 * gap;
+            let wrap = Some(egui::TextWrapMode::Wrap);
+            let title = egui::WidgetText::from(widgets::medium("Voice")).into_galley(
+                ui,
+                wrap,
+                w,
+                egui::TextStyle::Body,
+            );
+            let desc = egui::WidgetText::from(
+                RichText::new(
+                    "Gain, noise suppression with voice detection, gate, compressor, limiter",
+                )
+                .small()
+                .weak(),
+            )
+            .into_galley(ui, wrap, w, egui::TextStyle::Body);
+            let text_h = title.size().y + desc.size().y + 2.0;
+            let row_h = text_h.max(48.0);
             ui.horizontal(|ui| {
-                ui.set_min_height(48.0);
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+                ui.set_min_height(row_h);
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
                 ui.painter().rect_filled(rect, 10.0, p.accent_soft);
-                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::SPARKLES, egui::FontId::proportional(17.0), p.accent);
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icons::SPARKLES,
+                    egui::FontId::proportional(17.0),
+                    p.accent,
+                );
                 ui.vertical(|ui| {
+                    // A child column is laid out top-down, so the offset to the row centre is added by hand.
+                    ui.set_max_width(w);
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(widgets::medium("Voice"));
-                    ui.label(RichText::new("Gain, noise suppression with voice detection, gate, compressor, limiter").small().weak());
+                    ui.add_space((row_h - text_h) / 2.0);
+                    ui.label(title);
+                    ui.label(desc);
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(widgets::tonal(ui, icon_text(icons::PLUS, "Create"))).on_hover_text("Creates a new profile from this preset").clicked() {
+                    if ui
+                        .add(widgets::tonal(ui, create))
+                        .on_hover_text("Creates a new profile from this preset")
+                        .clicked()
+                    {
                         // Keeps the current profile: switch to a new one, then fill it.
                         let name = unique_name(&self.profiles, "Voice");
                         self.send(Request::SaveProfileAs { name });

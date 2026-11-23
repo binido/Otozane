@@ -64,7 +64,8 @@ pub fn page(app: &mut App, ui: &mut Ui) {
                 Some("Sound passes through the chain from top to bottom."),
             );
         });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        // Button labels follow the layout's cross alignment, so Min would pin them to the top.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(2.0);
             let add = widgets::primary(ui, icon_text(icons::PLUS, "Add effect"));
             egui::containers::menu::MenuButton::from_button(add).ui(ui, |ui| {
