@@ -9,13 +9,16 @@ Measured 2026-11-23. Prototype code and raw logs stayed outside the repo.
   longer than on CPU, uses 4.6x the CPU time and shows 3.7x the energy impact.
   All five GRU layers fall back to CPU.
 - **NPU: no-go for now.** No usable converted model exists for the Hush
-  weights. Getting one means replacing `libweya_nc` and its DSP. The cost it
-  would save is mostly wake-up overhead, which an NPU also pays.
-- **Where the CPU actually goes:** most of the paced cost is the core waking
-  from idle every 10 ms, not the model. The same frame takes 0.18 ms
-  back-to-back and 0.9 ms when paced. `top` CPU % therefore overstates the
-  energy cost. A cheaper fix, if one is needed, is on the CPU side (see
-  Follow-up).
+  weights. Getting one means replacing `libweya_nc` and its DSP. An NPU also
+  has a per-frame dispatch cost, and the paced 10 ms latency was not measured.
+- **Where the CPU actually goes:** the same frame takes 0.18 ms back-to-back,
+  0.9 ms when paced with a 10 ms sleep, and 0.28 ms when paced with a
+  spin-wait. Most of the paced cost comes from pacing, not from the model
+  compute alone. What causes it (idle-state exits, clock ramp-up, cold caches,
+  wake-up latency) was not isolated. Power was not measured, so timing alone
+  does not establish the energy cost, and `top` CPU % may not track it. If a
+  fix is needed, it is on the CPU side, after measuring which factor
+  contributes (see Follow-up).
 
 ## 1. Where the service CPU goes
 
@@ -41,7 +44,7 @@ Inference cost depends on pacing. Throwaway ctypes bench calling
 `weya_nc_process_frame` (tract 0.19.16, 160-sample frames, noise input, 2000
 frames):
 
-| Mode | mean ms | p99 ms | max ms | > budget (21.6 ms) | thread CPU % |
+| Mode | mean ms | p99 ms | max ms | calls > 21.6 ms | thread CPU % |
 |---|---|---|---|---|---|
 | back-to-back | 0.180 | 0.390 | 1.13 | 0 | 1.8 |
 | paced 10 ms, default QoS | 0.896 | 1.567 | 3.19 | 0 | 9.1 |
@@ -51,11 +54,23 @@ frames):
 | paced with spin-wait instead of sleep (app dylib) | 0.283 | 0.693 | 1.00 | 0 | (spinning) |
 | paced with sleep (app dylib) | 1.125 | 1.680 | 2.91 | 0 | 11.4 |
 
-QoS does not matter. Keeping the core busy (spin-wait) brings the frame back to
-0.28 ms, so the 4 to 5x slowdown comes from idle-state and clock ramp-up plus
-cold caches after each 10 ms sleep. The live worker (4.3%) sits between the
-back-to-back and the isolated paced numbers. The likely reason is other system
-activity keeping clocks up, but that was not verified.
+Durations are per call of `weya_nc_process_frame`. The "calls > 21.6 ms"
+column counts single calls longer than the budget. It is not the service's
+late-frame count: the service measures send-to-completion through an 8-frame
+queue, so several slow calls in a row can make a later frame late. That was
+not measured.
+
+Default, user-interactive and utility QoS gave similar means (0.81 to 0.92 ms)
+and p99 (1.46 to 1.57 ms). One background-QoS run had a wider tail: p99
+2.646 ms, max 33.9 ms, one call over 21.6 ms. A single run does not show
+whether that comes from QoS.
+
+Pacing with a spin-wait instead of a sleep brings the call back to 0.28 ms. So
+the 4 to 5x slowdown is linked to the thread sleeping between frames.
+Idle-state exits, clock ramp-up, cold caches and wake-up latency are possible
+causes. This test does not separate them. The live worker (4.3%) sits between
+the back-to-back and the isolated paced numbers. Other system activity keeping
+clocks up could explain that, but it was not verified.
 
 ## 2. tract 0.23 bump and Metal
 
@@ -100,14 +115,16 @@ Same prototype, same input (zeros), 2000 frames after 100 warm-up frames.
 the `top` POWER column (unitless, no sudo), averaged over 7 samples during a
 35 s paced run.
 
-| Runtime | Mode | mean ms | p99 ms | max ms | > 10 ms | > budget | CPU % | Energy impact |
+| Runtime | Mode | mean ms | p99 ms | max ms | calls > 10 ms | calls > 21.6 ms | CPU % | Energy impact |
 |---|---|---|---|---|---|---|---|---|
 | CPU (tract 0.23) | back-to-back | 0.124 | 0.140 | 0.17 | 0 | 0 | 1.2 | |
 | Metal | back-to-back | 2.512 | 3.096 | 3.66 | 0 | 0 | 6.2 | |
 | CPU (tract 0.23) | paced | 0.768 | 1.098 | 3.91 | 0 | 0 | 7.8 | 10.1 |
 | Metal | paced | 7.264 | 9.354 | 17.8 | 11 | 0 | 35.1 | 37.2 |
 
-Metal model preparation takes 3.3 s, compared with 64 ms on CPU. The tract
+Durations are per frame step (three network runs). The call-count columns are
+not late-frame counts, for the same reason as in section 1. Metal model
+preparation takes 3.3 s, compared with 64 ms on CPU. The tract
 0.23 CPU numbers above cover the networks only, so they are not directly
 comparable with the 0.19 `weya_nc_process_frame` numbers in section 1.
 
@@ -141,9 +158,9 @@ The licence is not a blocker (Hush and DFN are Apache-2.0 or MIT).
 
 Latency risk: an unpaced 0.26 ms says little about a 10 ms paced stream. ANE
 dispatch goes through a daemon with its own wake-up and scheduling. The DAFx26
-paper cited in the issue reports no callback-safe path, and our measurements
-show wake-up cost already dominates on CPU. Late frames would play dry, which
-is audible.
+paper cited in the issue reports no callback-safe path. On CPU, pacing alone
+already makes each call 4 to 5x slower (section 1). Late frames would play
+dry, which is audible.
 
 **ONNX Runtime + OpenVINO EP on Intel NPU (Linux).** This needs a new native
 runtime dependency and the model exported with GRU state as explicit I/O (or
@@ -156,13 +173,18 @@ ANE, plus a second model format to keep in sync with the Hush weights.
 ## Follow-up
 
 No implementation issue for a GPU/NPU backend. If Hush CPU use is still a
-concern, a CPU-side issue would target the wake-up overhead:
+concern, a CPU-side issue would start by measuring:
 
-> **Hush: reduce per-frame wake-up cost on CPU.** A paced 10 ms
-> `weya_nc_process_frame` costs 0.9 ms against 0.18 ms back-to-back, because
-> the core idles between frames (docs/research/hush-accelerators.md). Options
-> to measure: run the Hush worker for two frames per wake-up (costs 10 ms of
-> latency), or port `libweya_nc` to tract 0.23 for its faster CPU kernels (28
-> API-rename errors in the vendored `deep_filter`). Measure with energy
-> impact, not `top` CPU %. Done when service energy impact drops measurably
-> with no change in late frames.
+> **Hush: find and reduce the paced per-frame cost on CPU.** A
+> `weya_nc_process_frame` call paced at 10 ms takes 0.9 ms. It takes 0.18 ms
+> back-to-back and 0.28 ms paced with a spin-wait
+> (docs/research/hush-accelerators.md). The cause is not isolated. First
+> measure which factor contributes: idle-state exits, clock ramp-up, cold
+> caches or wake-up latency. Use per-core frequency and residency where
+> available, and cache counters. Also measure the service's real late frames
+> (send-to-completion against the 345-sample budget) and energy, not
+> `top` CPU %. Then try the matching fix. Candidates: process two frames per
+> wake-up (adds 10 ms of latency), or port `libweya_nc` to tract 0.23 (28
+> API-rename errors in the vendored `deep_filter`, CPU speed relative to
+> 0.19 not yet measured). Done when service energy drops measurably with no
+> increase in late frames.
