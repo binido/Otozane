@@ -33,22 +33,41 @@ pub fn kind_icon(kind: EffectKind) -> &'static str {
 
 const LABEL_W: f32 = 150.0;
 
-const AI_TIP: &str = "Uses a neural network to process the sound.";
+pub(crate) const AI_TIP: &str = "Uses a neural network to process the sound.";
 
-fn heavy_tip() -> String {
+pub(crate) fn heavy_tip() -> String {
     let ms = hush::LATENCY as f32 * 1000.0 / otozane_core::SAMPLE_RATE as f32;
     format!("Costs noticeably more CPU and adds about {ms:.0} ms of latency.")
 }
 
 /// Draws the AI and Heavy badges the effect kind has, with hover text.
 fn kind_badges(ui: &mut Ui, kind: EffectKind) {
+    badges(ui, kind.is_ai(), kind.is_heavy());
+}
+
+/// Draws the AI badge, and the Heavy one next to it, with hover text.
+pub(crate) fn badges(ui: &mut Ui, ai: bool, heavy: bool) {
     let p = theme::current(ui.ctx());
-    if kind.is_ai() {
+    if ai {
         widgets::badge(ui, "AI", p.accent, p.accent_soft).on_hover_text(AI_TIP);
     }
-    if kind.is_heavy() {
+    if heavy {
         widgets::badge(ui, "Heavy", p.text_weak, p.raised).on_hover_text(heavy_tip());
     }
+}
+
+/// Size [`badges`] take, spacing included.
+pub(crate) fn badges_size(ui: &Ui, ai: bool, heavy: bool) -> egui::Vec2 {
+    let gap = ui.spacing().item_spacing.x;
+    let mut size = egui::Vec2::ZERO;
+    for text in [ai.then_some("AI"), heavy.then_some("Heavy")]
+        .into_iter()
+        .flatten()
+    {
+        let s = widgets::badge_size(ui, text);
+        size = egui::vec2(size.x + gap + s.x, size.y.max(s.y));
+    }
+    size
 }
 
 /// One parameter line: fixed-width label, then the control filling the rest,
