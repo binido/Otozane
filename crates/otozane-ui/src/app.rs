@@ -805,12 +805,17 @@ impl App {
                 + 2.0 * ui.spacing().button_padding.x;
             let w = ui.available_width() - 36.0 - button_w - 3.0 * gap;
             let wrap = Some(egui::TextWrapMode::Wrap);
+            let chain = otozane_core::config::Profile::voice().chain;
+            let ai = chain.iter().any(|e| e.kind.is_ai());
+            let heavy = chain.iter().any(|e| e.kind.is_heavy());
+            let badges_size = effects::badges_size(ui, ai, heavy);
             let title = egui::WidgetText::from(widgets::medium("Voice")).into_galley(
                 ui,
                 wrap,
-                w,
+                w - badges_size.x,
                 egui::TextStyle::Body,
             );
+            let title_h = title.size().y.max(badges_size.y);
             let desc = egui::WidgetText::from(
                 RichText::new(
                     "Gain, noise suppression with voice detection, gate, compressor, limiter",
@@ -819,7 +824,7 @@ impl App {
                 .weak(),
             )
             .into_galley(ui, wrap, w, egui::TextStyle::Body);
-            let text_h = title.size().y + desc.size().y + 2.0;
+            let text_h = title_h + desc.size().y + 2.0;
             let row_h = text_h.max(48.0);
             ui.horizontal(|ui| {
                 ui.set_min_height(row_h);
@@ -838,7 +843,15 @@ impl App {
                     ui.set_max_width(w);
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.add_space((row_h - text_h) / 2.0);
-                    ui.label(title);
+                    // Not ui.horizontal, which is at least a control tall and would break text_h.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(w, title_h),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.label(title);
+                            effects::badges(ui, ai, heavy);
+                        },
+                    );
                     ui.label(desc);
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -850,9 +863,7 @@ impl App {
                         // Keeps the current profile: switch to a new one, then fill it.
                         let name = unique_name(&self.profiles, "Voice");
                         self.send(Request::SaveProfileAs { name });
-                        self.send(Request::SetChain {
-                            chain: otozane_core::config::Profile::voice().chain,
-                        });
+                        self.send(Request::SetChain { chain });
                     }
                 });
             });

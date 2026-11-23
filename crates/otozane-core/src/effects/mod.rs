@@ -75,6 +75,16 @@ impl EffectKind {
         }
     }
 
+    /// Whether the effect runs a neural network.
+    pub fn is_ai(self) -> bool {
+        matches!(self, EffectKind::Rnnoise | EffectKind::Hush)
+    }
+
+    /// Whether the effect costs noticeably more CPU or latency than a regular one.
+    pub fn is_heavy(self) -> bool {
+        self == EffectKind::Hush
+    }
+
     pub fn params(self) -> &'static [ParamSpec] {
         match self {
             EffectKind::Gain => gain::PARAMS,
