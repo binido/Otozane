@@ -18,7 +18,7 @@ mod menubar;
 mod theme;
 #[cfg(target_os = "linux")]
 mod tray;
-#[allow(dead_code)] // wired into Settings by the updates UI
+mod update;
 mod update_release;
 mod widgets;
 
@@ -121,22 +121,28 @@ fn parse_size(s: &str) -> Option<[f32; 2]> {
 
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
+    let updates =
+        update::Updater::spawn(update::platform_backend(), app::UiSettings::load().updates);
     eframe::run_native(
         "Otozane",
         options(),
-        Box::new(|cc| {
-            let has_menubar = menubar::spawn(cc.egui_ctx.clone())
+        Box::new(move |cc| {
+            let has_menubar = menubar::spawn(cc.egui_ctx.clone(), updates.clone())
                 .map_err(|e| eprintln!("no menu bar icon: {e}"))
                 .is_ok();
-            Ok(Box::new(app::App::new(cc, has_menubar)))
+            Ok(Box::new(app::App::new(cc, has_menubar, updates.clone())))
         }),
     )
 }
 
 #[cfg(target_os = "linux")]
-fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
+fn window(
+    tray: Option<&ksni::blocking::Handle<tray::Tray>>,
+    updates: &update::Updater,
+) -> eframe::Result {
     let has_tray = tray.is_some();
     let tray_cc = tray.cloned();
+    let updates = updates.clone();
     let result = eframe::run_native(
         "Otozane",
         options(),
@@ -145,7 +151,7 @@ fn window(tray: Option<&ksni::blocking::Handle<tray::Tray>>) -> eframe::Result {
                 let ctx = cc.egui_ctx.clone();
                 t.update(|t| t.window = Some(ctx));
             }
-            Ok(Box::new(app::App::new(cc, has_tray)))
+            Ok(Box::new(app::App::new(cc, has_tray, updates)))
         }),
     );
     if let Some(t) = tray {
@@ -160,20 +166,22 @@ fn main() -> eframe::Result {
     if hidden && client::stop_on_close_enabled() {
         return Ok(());
     }
+    let updates =
+        update::Updater::spawn(update::platform_backend(), app::UiSettings::load().updates);
     let (tx, rx) = std::sync::mpsc::channel();
-    let tray = tray::spawn(tx, hidden);
+    let tray = tray::spawn(tx, hidden, updates.clone());
     let Some(tray) = tray else {
-        return window(None);
+        return window(None, &updates);
     };
     if !hidden {
-        window(Some(&tray))?;
+        window(Some(&tray), &updates)?;
         if client::stop_on_close_enabled() {
             return Ok(());
         }
     }
     // The window event loop has ended (or never started): wait in the tray.
     while let Ok(tray::Cmd::Show) = rx.recv() {
-        window(Some(&tray))?;
+        window(Some(&tray), &updates)?;
         if client::stop_on_close_enabled() {
             break;
         }

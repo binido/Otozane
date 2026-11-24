@@ -1,5 +1,6 @@
 use crate::client::{self, Connection, ServiceClient};
 use crate::theme::{self, ThemeChoice};
+use crate::update;
 use crate::widgets::{self, card, icon, icon_text, row, section};
 use crate::{chrome, effects, icons};
 use egui::{Frame, Margin, RichText, Ui};
@@ -38,6 +39,7 @@ impl Page {
 #[serde(default)]
 pub struct UiSettings {
     pub theme: ThemeChoice,
+    pub updates: update::Prefs,
 }
 
 fn ui_settings_path() -> std::path::PathBuf {
@@ -65,6 +67,12 @@ impl UiSettings {
 
 pub struct App {
     client: ServiceClient,
+    updates: update::Updater,
+    update_state: update::State,
+    /// The user confirmed the restart that finishes a staged update.
+    confirm_restart: bool,
+    /// Last release version announced with a toast.
+    seen_release: Option<String>,
     page: Page,
     settings: UiSettings,
     status: Option<Status>,
@@ -95,7 +103,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, has_tray: bool) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, has_tray: bool, updates: update::Updater) -> Self {
         let mut settings = UiSettings::load();
         match std::env::var("OTOZANE_THEME").as_deref() {
             Ok("dark") => settings.theme = ThemeChoice::Dark,
@@ -106,6 +114,10 @@ impl App {
         let stop_on_close = client::stop_on_close_enabled();
         Self {
             client: ServiceClient::spawn(cc.egui_ctx.clone(), stop_on_close),
+            update_state: updates.snapshot(),
+            updates,
+            confirm_restart: false,
+            seen_release: None,
             page: match std::env::var("OTOZANE_PAGE").as_deref() {
                 Ok("effects" | "plugins") => Page::Effects,
                 Ok("profiles") => Page::Profiles,
@@ -198,6 +210,38 @@ impl App {
         } else {
             client::start_service()
         }
+    }
+
+    /// Reads the update thread, announces a new release once and mirrors the
+    /// persisted check time. Automatic checks run on the update thread.
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        let state = self.updates.snapshot();
+        if state.phase == update::Phase::Available
+            && let Some(release) = &state.release
+            && self.seen_release.as_deref() != Some(release.version.as_str())
+        {
+            self.seen_release = Some(release.version.clone());
+            self.toasts.push((
+                format!("Otozane {} is available", release.version),
+                Instant::now(),
+                false,
+            ));
+        }
+        if state.last_check != self.settings.updates.last_check {
+            self.settings.updates.last_check = state.last_check;
+            self.settings.save();
+        }
+        if matches!(
+            state.phase,
+            update::Phase::Checking | update::Phase::Staging | update::Phase::Applying
+        ) {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        if update::take_open_settings() {
+            self.page = Page::Settings;
+            ctx.request_repaint();
+        }
+        self.update_state = state;
     }
 
     /// Current state as (color, short title, detail line).
@@ -293,7 +337,12 @@ impl App {
                 .frame_when_inactive(selected)
                 .corner_radius(24)
                 .min_size(egui::vec2(ui.available_width(), 48.0));
-            if ui.add(b).clicked() {
+            let response = ui.add(b);
+            if page == Page::Settings && self.update_state.has_update() {
+                let at = egui::pos2(response.rect.right() - 22.0, response.rect.center().y);
+                ui.painter().circle_filled(at, 4.0, p.accent);
+            }
+            if response.clicked() {
                 self.page = page;
             }
         }
@@ -891,6 +940,7 @@ impl App {
                 }
             });
         });
+        self.updates_section(ui);
         #[cfg(target_os = "macos")]
         {
             section(ui, "Virtual microphone");
@@ -1073,6 +1123,271 @@ impl App {
                 });
         });
     }
+
+    fn updates_section(&mut self, ui: &mut Ui) {
+        let p = theme::current(ui.ctx());
+        let st = self.update_state.clone();
+        let phase = st.phase.clone();
+        let busy = matches!(
+            phase,
+            update::Phase::Checking
+                | update::Phase::Staging
+                | update::Phase::Ready
+                | update::Phase::Applying
+                | update::Phase::Restarting
+        );
+        section(ui, "Updates");
+        card(ui, |ui| {
+            let status = if phase == update::Phase::Checking {
+                "Checking for updates...".to_string()
+            } else {
+                last_checked(self.settings.updates.last_check)
+            };
+            row(
+                ui,
+                &format!("Otozane {}", st.current_version),
+                Some(&status),
+                |ui| {
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            widgets::tonal(ui, icon_text(icons::REFRESH_CW, "Check for updates")),
+                        )
+                        .clicked()
+                    {
+                        self.updates.check();
+                    }
+                },
+            );
+            match &st.release {
+                Some(release) => self.release_section(ui, &p, &st, release),
+                None => match &phase {
+                    update::Phase::UpToDate => {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(icon(icons::CIRCLE_CHECK, 15.0).color(p.accent));
+                            ui.label(RichText::new("You have the latest version.").small());
+                        });
+                    }
+                    update::Phase::Failed(message) => {
+                        widgets::divider(ui);
+                        ui.add_space(6.0);
+                        self.error_row(ui, &p, message);
+                        if ui.add(widgets::tonal(ui, "Try again")).clicked() {
+                            self.updates.check();
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            self.automatic_updates(ui);
+        });
+    }
+
+    fn release_section(
+        &mut self,
+        ui: &mut Ui,
+        p: &theme::Palette,
+        st: &update::State,
+        release: &update::Release,
+    ) {
+        widgets::divider(ui);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(widgets::medium(format!(
+                "Version {} is available",
+                release.version
+            )));
+            widgets::badge(ui, "New", p.accent, p.accent_soft);
+        });
+        if !release.notes.trim().is_empty() {
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .id_salt("release_notes")
+                .max_height(160.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(release.notes.trim()).small().weak()).wrap(),
+                    );
+                });
+        }
+        ui.add_space(8.0);
+        match &release.action {
+            update::Action::Update => {
+                self.update_actions(ui, release, &st.phase);
+                if widgets::link(ui, "Release notes on GitHub").clicked()
+                    && let Err(e) = update::open_page(&release.page_url)
+                {
+                    self.toast_error(format!("Could not open the release page: {e}"));
+                }
+            }
+            update::Action::ReleasePage { hint } => {
+                ui.label(RichText::new(hint).small().weak());
+                ui.add_space(4.0);
+                if ui
+                    .add(widgets::primary(
+                        ui,
+                        icon_text(icons::ARROW_UP, "Open release page"),
+                    ))
+                    .clicked()
+                    && let Err(e) = update::open_page(&release.page_url)
+                {
+                    self.toast_error(format!("Could not open the release page: {e}"));
+                }
+            }
+        }
+    }
+
+    fn update_actions(&mut self, ui: &mut Ui, release: &update::Release, phase: &update::Phase) {
+        let p = theme::current(ui.ctx());
+        match phase {
+            update::Phase::Available => {
+                if ui
+                    .add(widgets::primary(
+                        ui,
+                        icon_text(icons::DOWNLOAD, &format!("Update to {}", release.version)),
+                    ))
+                    .clicked()
+                {
+                    self.confirm_restart = false;
+                    self.updates.stage();
+                }
+            }
+            update::Phase::Staging => self.working(ui, "Downloading and checking the file..."),
+            update::Phase::Applying => self.working(ui, "Installing..."),
+            update::Phase::Restarting => self.working(ui, "Restarting Otozane..."),
+            update::Phase::Ready if !self.confirm_restart => {
+                if ui
+                    .add(widgets::primary(
+                        ui,
+                        icon_text(icons::REFRESH_CW, "Restart and update"),
+                    ))
+                    .clicked()
+                {
+                    self.confirm_restart = true;
+                }
+            }
+            update::Phase::Ready => {
+                let hint = if self.processing_now() {
+                    "Audio is processing now. It stops for a few seconds while Otozane restarts."
+                } else {
+                    "Audio stops for a few seconds while Otozane restarts."
+                };
+                ui.label(RichText::new(hint).small().weak());
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(widgets::primary(
+                            ui,
+                            icon_text(icons::REFRESH_CW, "Restart now"),
+                        ))
+                        .clicked()
+                    {
+                        self.confirm_restart = false;
+                        self.updates.apply();
+                    }
+                    if widgets::link(ui, "Later").clicked() {
+                        self.confirm_restart = false;
+                    }
+                });
+            }
+            update::Phase::Failed(message) => {
+                self.error_row(ui, &p, message);
+                if ui.add(widgets::tonal(ui, "Try again")).clicked() {
+                    self.updates.stage();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn automatic_updates(&mut self, ui: &mut Ui) {
+        widgets::divider(ui);
+        let mut on = self.settings.updates.check_automatically;
+        row(
+            ui,
+            "Check automatically",
+            Some("Looks for a new version while Otozane is running"),
+            |ui| {
+                if widgets::switch(ui, &mut on).changed() {
+                    self.settings.updates.check_automatically = on;
+                    self.save_update_prefs();
+                }
+            },
+        );
+        if self.settings.updates.check_automatically {
+            widgets::divider(ui);
+            let mut interval = self.settings.updates.interval;
+            row(ui, "Check interval", None, |ui| {
+                egui::ComboBox::from_id_salt("update_interval")
+                    .selected_text(interval.label())
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        for choice in update::Interval::ALL {
+                            if ui
+                                .selectable_label(choice == interval, choice.label())
+                                .clicked()
+                            {
+                                interval = choice;
+                            }
+                        }
+                    });
+                if interval != self.settings.updates.interval {
+                    self.settings.updates.interval = interval;
+                    self.save_update_prefs();
+                }
+            });
+        }
+    }
+
+    fn save_update_prefs(&mut self) {
+        self.settings.save();
+        self.updates.set_prefs(self.settings.updates.clone());
+    }
+
+    fn processing_now(&self) -> bool {
+        self.status.as_ref().is_some_and(|s| {
+            s.processing_enabled && !s.muted && matches!(s.capture, CaptureState::Running(_))
+        })
+    }
+
+    fn working(&self, ui: &mut Ui, text: &str) {
+        let p = theme::current(ui.ctx());
+        ui.horizontal(|ui| {
+            ui.label(icon(icons::LOADER_CIRCLE, 15.0).color(p.text_weak));
+            ui.label(RichText::new(text).small().weak());
+        });
+    }
+
+    fn error_row(&self, ui: &mut Ui, p: &theme::Palette, message: &str) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(icon(icons::CIRCLE_ALERT, 15.0).color(p.error));
+            ui.add(egui::Label::new(RichText::new(message).small().color(p.error)).wrap());
+        });
+    }
+
+    fn toast_error(&mut self, message: String) {
+        self.toasts.push((message, Instant::now(), true));
+    }
+}
+
+/// "Last checked just now", from Unix seconds.
+fn last_checked(last: Option<i64>) -> String {
+    let Some(last) = last else {
+        return "Never checked".to_string();
+    };
+    let ago = update::now().saturating_sub(last);
+    let text = if ago <= 90 {
+        "just now".to_string()
+    } else if ago <= 5400 {
+        format!("{} min ago", (ago / 60).max(1))
+    } else if ago <= 172_800 {
+        format!("{} h ago", (ago / 3600).max(1))
+    } else {
+        format!("{} d ago", (ago / 86_400).max(1))
+    };
+    format!("Last checked {text}")
 }
 
 /// `base`, or `base 2`, `base 3`... if taken.
@@ -1102,6 +1417,7 @@ fn device_label(st: &Status, name: Option<&str>) -> String {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.sync();
+        self.poll_updates(ui.ctx());
         #[cfg(target_os = "macos")]
         if let Some(r) = crate::driver::take_result() {
             let (msg, is_error) = match r {
@@ -1215,6 +1531,12 @@ impl eframe::App for App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        // A check may have run while the window was hidden; keep its time.
+        let state = self.updates.snapshot();
+        if state.last_check != self.settings.updates.last_check {
+            self.settings.updates.last_check = state.last_check;
+            self.settings.save();
+        }
         self.client.close();
     }
 }
@@ -1267,5 +1589,45 @@ mod tests {
         let h = peak_hold(h, 0.1, t0 + Duration::from_secs(2), 0.9);
         assert!((h.0 - 0.45).abs() < 1e-6, "falls after the hold");
         assert_eq!(peak_hold(h, 0.8, t0, 0.9).0, 0.8, "jumps to a new peak");
+    }
+
+    #[test]
+    fn settings_without_updates_keep_the_old_file_working() {
+        let old: UiSettings = toml::from_str("theme = \"dark\"").unwrap();
+        assert_eq!(old.theme, ThemeChoice::Dark);
+        assert!(!old.updates.check_automatically);
+        assert_eq!(old.updates.interval, update::Interval::OneDay);
+        assert_eq!(old.updates.last_check, None);
+
+        let new: UiSettings = toml::from_str(
+            "theme = \"light\"\n\n[updates]\ncheck_automatically = true\ninterval = \"12h\"\nlast_check = 42\n",
+        )
+        .unwrap();
+        assert_eq!(new.theme, ThemeChoice::Light);
+        assert!(new.updates.check_automatically);
+        assert_eq!(new.updates.interval, update::Interval::TwelveHours);
+        assert_eq!(new.updates.last_check, Some(42));
+    }
+
+    #[test]
+    fn default_update_settings_serialize_with_a_one_day_interval() {
+        let text = toml::to_string(&UiSettings::default()).unwrap();
+        assert!(text.contains("interval = \"1d\""), "{text}");
+        assert!(text.contains("check_automatically = false"), "{text}");
+    }
+
+    #[test]
+    fn last_checked_text_is_relative() {
+        let now = update::now();
+        assert_eq!(super::last_checked(None), "Never checked");
+        assert_eq!(super::last_checked(Some(now - 5)), "Last checked just now");
+        assert_eq!(
+            super::last_checked(Some(now - 3 * 3600)),
+            "Last checked 3 h ago"
+        );
+        assert_eq!(
+            super::last_checked(Some(now - 3 * 86_400)),
+            "Last checked 3 d ago"
+        );
     }
 }

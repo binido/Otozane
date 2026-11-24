@@ -107,6 +107,21 @@ Limitations:
   </tr>
 </table>
 
+### Updates
+
+**Settings → Updates** shows the installed version and checks
+[GitHub releases](https://github.com/binido/Otozane/releases/latest) on request.
+A newer version shows its release notes. **Update** downloads and verifies the
+release in the background while Otozane keeps running; **Restart and update**
+then installs it and restarts the app and the audio service. The restart always
+asks first, so a call or a recording never loses audio without confirmation.
+Installs the app cannot replace itself, such as an Arch package, show a link to
+the release page and the command to run instead.
+
+**Check automatically** looks for updates while Otozane runs: every 6 hours,
+12 hours, 1 day (default) or 1 week. A found update is announced in the window,
+and the tray or menu bar entry becomes **Update to X**.
+
 ## Install
 
 The installer selects a package from the latest
@@ -282,7 +297,7 @@ On macOS: `~/Library/Application Support/Otozane/`, or `$XDG_CONFIG_HOME/otozane
 |---|---|
 | `config.toml` | Selected microphone, processing on/off, active profile, channel count |
 | `profiles/<name>.toml` | Effect chains |
-| `ui.toml` | UI theme |
+| `ui.toml` | UI theme and update checks |
 
 Example profile:
 
