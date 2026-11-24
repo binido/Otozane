@@ -2,6 +2,7 @@
 //! the service state, switches the processing mode and quits.
 
 use crate::client::Mode;
+use crate::update::{self, Updater};
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{RadioGroup, RadioItem, StandardItem};
 use otozane_core::protocol::{CaptureState, Client, Request, Response};
@@ -21,6 +22,7 @@ pub struct Tray {
     /// `None` while the service is not reachable.
     mode: Option<Mode>,
     theme_path: String,
+    updates: Updater,
 }
 
 impl Tray {
@@ -31,6 +33,28 @@ impl Tray {
                 let _ = self.tx.send(Cmd::Show);
             }
         }
+    }
+
+    /// Brings the window up, whether it is hidden in the tray or just behind
+    /// other windows.
+    fn show(&mut self) {
+        match &self.window {
+            Some(ctx) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
+            }
+            None => {
+                let _ = self.tx.send(Cmd::Show);
+            }
+        }
+    }
+
+    fn updates_clicked(&mut self) {
+        update::request_settings();
+        if !self.updates.snapshot().has_update() {
+            self.updates.check();
+        }
+        self.show();
     }
 }
 
@@ -71,10 +95,18 @@ impl ksni::Tray for Tray {
         self.toggle();
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        let update_label = self.updates.snapshot().menu_label();
         vec![
             StandardItem {
                 label: self.state.into(),
                 enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
+                label: update_label,
+                activate: Box::new(Self::updates_clicked),
                 ..Default::default()
             }
             .into(),
@@ -123,6 +155,9 @@ impl ksni::Tray for Tray {
                 label: "Quit".into(),
                 icon_name: "application-exit".into(),
                 activate: Box::new(|this: &mut Self| {
+                    if this.updates.snapshot().phase.is_handoff() {
+                        return;
+                    }
                     if let Some(ctx) = &this.window {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
@@ -138,13 +173,14 @@ impl ksni::Tray for Tray {
 /// Registers the tray icon and keeps its service state current. `wait`
 /// registers even before a tray host is running (login races the panel).
 /// `None` when there is no tray host.
-pub fn spawn(tx: Sender<Cmd>, wait: bool) -> Option<Handle<Tray>> {
+pub fn spawn(tx: Sender<Cmd>, wait: bool, updates: Updater) -> Option<Handle<Tray>> {
     let tray = Tray {
         tx,
         window: None,
         state: "Connecting",
         mode: None,
         theme_path: install_icon(),
+        updates,
     };
     let handle = match tray.assume_sni_available(wait).spawn() {
         Ok(h) => h,

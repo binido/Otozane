@@ -239,6 +239,28 @@ It starts the service on window launch and sends `Shutdown` before exiting
 the UI process. It overrides both login-start settings. On macOS the service
 exits and the installed HAL driver continues to provide the input device.
 
+Updates live in `update.rs`. A background thread owns the update backend
+(GitHub releases plus the per-platform installer, selected by
+`platform_backend()`); the UI queues typed commands and reads a typed state, so
+no network or installer prompt blocks a frame. A check only reports a newer
+release, staging downloads and verifies it, and installing or restarting runs
+only after the user confirms. The automatic check preference and the last check
+time are in `ui.toml`.
+
+`update_backend.rs` implements that backend. `update_release.rs` fetches
+`/releases/latest`, compares the tag with the running version and downloads the
+exact asset into a private directory under `<config dir>/updates`, checking it against the same release's
+`SHA256SUMS`. `update_linux.rs` and `update_macos.rs` pick the asset for how the
+app was installed and do the install: a package manager through polkit, a prefix
+tarball with rollback, or a DMG whose app bundle is validated and swapped by a
+helper. Install methods the app cannot replace itself, such as Arch, return a
+release-page hint instead. After confirmation, Linux stops the old service
+before installing and the worker starts the replacement service and app. On
+macOS the worker stops the service and starts a helper that waits for the app
+to exit before swapping bundles. The window closes after the worker launches
+the replacement or helper. A failed handoff leaves the window open with a retry
+that skips installation.
+
 Styling is monochrome Material 3 (fixed palette, tonal surfaces, M3 controls), using
 bundled Roboto and a Lucide icon font subset. egui's default fonts stay as
 fallbacks for scripts Roboto lacks.

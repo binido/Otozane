@@ -2,6 +2,7 @@
 //! mode, shows the window and quits.
 
 use crate::client::Mode;
+use crate::update::{self, Updater};
 use objc2::rc::Retained;
 use objc2::runtime::NSObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -19,6 +20,10 @@ struct Items {
     _reopen: Retained<ReopenHandler>,
     state: MenuItem,
     modes: Vec<(Mode, CheckMenuItem)>,
+    update: MenuItem,
+    /// Update entry text last shown.
+    update_text: String,
+    updates: Updater,
     show: MenuItem,
     quit: MenuItem,
     ctx: egui::Context,
@@ -32,12 +37,14 @@ thread_local! {
 }
 
 /// Adds the icon to the menu bar. Call on the main thread once the event loop runs.
-pub fn spawn(ctx: egui::Context) -> Result<(), String> {
+pub fn spawn(ctx: egui::Context, updates: Updater) -> Result<(), String> {
     let state = MenuItem::new("Connecting", false, None);
     let modes: Vec<_> = Mode::ALL
         .iter()
         .map(|(m, label)| (*m, CheckMenuItem::new(*label, false, false, None)))
         .collect();
+    let update_text = updates.snapshot().menu_label();
+    let update_item = MenuItem::new(update_text.clone(), true, None);
     let show = MenuItem::new("Show Otozane", true, None);
     let quit = MenuItem::new("Quit Otozane", true, None);
     let menu = Menu::new();
@@ -47,6 +54,9 @@ pub fn spawn(ctx: egui::Context) -> Result<(), String> {
     for (_, item) in &modes {
         menu.append(item).map_err(|e| e.to_string())?;
     }
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(|e| e.to_string())?;
+    menu.append(&update_item).map_err(|e| e.to_string())?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| e.to_string())?;
     menu.append(&show).map_err(|e| e.to_string())?;
@@ -67,6 +77,9 @@ pub fn spawn(ctx: egui::Context) -> Result<(), String> {
             _reopen: reopen,
             state,
             modes,
+            update: update_item,
+            update_text,
+            updates,
             show,
             quit,
             ctx,
@@ -91,7 +104,16 @@ impl Items {
         let app = NSApplication::sharedApplication(mtm);
         if e.id == *self.show.id() {
             show(&app);
+        } else if e.id == *self.update.id() {
+            update::request_settings();
+            if !self.updates.snapshot().has_update() {
+                self.updates.check();
+            }
+            show(&app);
         } else if e.id == *self.quit.id() {
+            if self.updates.snapshot().phase.is_handoff() {
+                return;
+            }
             if crate::client::stop_on_close_enabled() {
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
@@ -173,8 +195,14 @@ fn show(app: &NSApplication) {
 // ponytail: the menu and the icon refresh only while the window draws frames,
 // a state or mode changed while hidden shows up on the next show. A status
 // poll thread posting to the main thread lifts this.
-pub fn on_frame(ctx: &egui::Context, status: Option<&Status>, stop_on_close: bool) {
+pub fn on_frame(
+    ctx: &egui::Context,
+    status: Option<&Status>,
+    stop_on_close: bool,
+    restarting: bool,
+) {
     if !stop_on_close
+        && !restarting
         && ctx.input(|i| i.viewport().close_requested())
         && let Some(mtm) = MainThreadMarker::new()
     {
@@ -187,6 +215,11 @@ pub fn on_frame(ctx: &egui::Context, status: Option<&Status>, stop_on_close: boo
     }
     ITEMS.with_borrow_mut(|i| {
         let Some(i) = i else { return };
+        let update_text = i.updates.snapshot().menu_label();
+        if update_text != i.update_text {
+            i.update.set_text(&update_text);
+            i.update_text = update_text;
+        }
         let (text, mode) = match status {
             Some(st) => (label(st), Some(Mode::of(st))),
             None => ("Service stopped", None),

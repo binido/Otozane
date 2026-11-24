@@ -1,0 +1,54 @@
+{
+  "tag_name": "v0.6.0",
+  "name": "Otozane 0.6.0",
+  "body": "## 0.6.0\n\n### Update from the app\n\n- Check GitHub releases from Settings and download the matching package.\n- Verify downloads against SHA256SUMS before installing.\n",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+    {
+      "name": "SHA256SUMS",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/SHA256SUMS",
+      "size": 512
+    },
+    {
+      "name": "otozane-v0.6.0-macos-arm64.dmg",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/otozane-v0.6.0-macos-arm64.dmg",
+      "size": 18
+    },
+    {
+      "name": "otozane_0.6.0-1_amd64.deb",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/otozane_0.6.0-1_amd64.deb",
+      "size": 18
+    },
+    {
+      "name": "otozane_0.6.0-1_arm64.deb",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/otozane_0.6.0-1_arm64.deb",
+      "size": 18
+    },
+    {
+      "name": "otozane-0.6.0-1.x86_64.rpm",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/otozane-0.6.0-1.x86_64.rpm",
+      "size": 18
+    },
+    {
+      "name": "otozane-0.6.0-1.aarch64.rpm",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/otozane-0.6.0-1.aarch64.rpm",
+      "size": 18
+    },
+    {
+      "name": "otozane-v0.6.0-linux-x86_64.tar.gz",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/otozane-v0.6.0-linux-x86_64.tar.gz",
+      "size": 18
+    },
+    {
+      "name": "otozane-v0.6.0-linux-aarch64.tar.gz",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/otozane-v0.6.0-linux-aarch64.tar.gz",
+      "size": 18
+    },
+    {
+      "name": "PKGBUILD",
+      "browser_download_url": "https://github.com/binido/Otozane/releases/download/v0.6.0/PKGBUILD",
+      "size": 512
+    }
+  ]
+}

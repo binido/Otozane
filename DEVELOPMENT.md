@@ -47,6 +47,79 @@ stopped. A single `pw-record` should continue to record silence until processing
 resumes. On macOS use one `ffmpeg -f avfoundation -i ":Otozane Microphone"`
 recording through an IPC shutdown and a new service launch.
 
+## macOS app updates
+
+The macOS side of the in-app updater lives in
+`crates/otozane-ui/src/update_macos.rs`. The generic updater downloads the
+release asset and checks it against `SHA256SUMS`; this module trusts that
+result and handles only the app bundle:
+
+- `detect()` finds the running `Otozane.app` and its version. It fails with a
+  message for the Updates section when Otozane runs outside a bundle, from
+  Gatekeeper's App Translocation copy, or from a folder this user cannot write.
+- `asset_name(version)` returns `otozane-vX.Y.Z-macos-arm64.dmg` and refuses
+  Intel Macs.
+- `stage(dmg, bundle, version)` mounts the DMG read-only, requires exactly one
+  `.app`, checks the bundle id, version, Apple Silicon executable and code
+  signature, and copies the newer bundle to a private directory beside the
+  installed app.
+- `Staged::restart()` prepares a shell helper, stops the audio service and
+  starts the helper. The app exits after the helper starts. The helper waits
+  up to a minute for that exit, swaps the bundles on the same filesystem,
+  starts the service through launchd or as a detached process, and opens the
+  new app after its audio service responds with the expected version. The
+  helper keeps the backup until both checks pass. If either fails, it stops
+  the replacement service before restoring the previous bundle. An existing
+  LaunchAgent must already point to the bundle being replaced.
+- `driver_state()` compares the virtual microphone driver in the bundle with
+  the installed one. `needs_reinstall` tells Settings → Virtual microphone to
+  offer a reinstall after the update.
+
+The downloaded DMG is removed after staging. The helper writes
+`last-update.log` under `~/Library/Application Support/Otozane/updates` (or
+`$XDG_CONFIG_HOME/otozane/updates`). If recovery fails, the helper logs the
+location of the backup beside the installed app. The next app launch shows
+the helper's failure message in Settings → Updates. The macOS update tests use a
+signed fixture app and DMG in a temporary folder with stand-ins for
+`launchctl` and `open`.
+
+The app is signed ad-hoc and not notarized. Gatekeeper cannot assess that
+signature, so after the checksum, bundle id, version and signature checks the
+staged app gets `xattr -dr com.apple.quarantine`. Without it a downloaded
+update would not open. Trust in the update therefore rests on the HTTPS
+download and the release's `SHA256SUMS`, not on the signature.
+
+### Clean Mac checklist
+
+Automatic tests cover the bundle checks and the swap/rollback helper. These
+need a real machine before the update can be called working:
+
+- Build two test versions from sources that contain the updater. Install the
+  lower-version build in `/Applications` and use Settings → Updates to
+  install the higher-version test release. Repeat as an admin user and as a
+  non-admin user. Confirm that the app reopens, shows the new version,
+  `otozaned` is running and Otozane Microphone records.
+- Separately, install v0.5.0 and upgrade it manually by replacing the app
+  bundle with the test release. Launch the replacement and repeat the app
+  version and microphone checks. v0.5.0 has no in-app updater.
+- Start from a freshly downloaded DMG on a Mac that has never run Otozane.
+  The updated app launches without the right-click → Open step.
+- Install the driver from the old release, update to a release with a changed
+  driver, and check that Settings → Virtual microphone offers a reinstall and
+  that the microphone works afterwards.
+- Try a corrupt or wrong-version DMG and confirm that the error appears and
+  the installed app still opens. Simulate a failure to open the replacement
+  and confirm that the helper restores the old app and service.
+- Open Otozane from `Downloads` (App Translocation) and from a read-only
+  folder: no Update button, only the release-page link.
+- With login start on, check that the launchd agent starts the service from
+  the new bundle. With it off, the new app still opens and Start service works.
+- Let the app exit after confirmation and confirm that the helper replaces
+  the bundle. To test the timeout, start with audio processing active and
+  keep the old app process alive for one minute after confirmation. Confirm
+  that the bundle stays in place and that the old audio service responds to
+  `Status` or records audio again.
+
 ## Scripts
 
 | Script | Purpose |
