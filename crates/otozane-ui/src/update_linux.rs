@@ -179,6 +179,9 @@ impl Install {
 /// Installs a verified asset and returns the restart the UI applies after handoff.
 pub fn install(install: &Install, version: &str, staged: &Path) -> Result<Restart, Error> {
     let version = release_version(version)?;
+    // The install replaces the running binary, after which `/proc/self/exe`
+    // reads "... (deleted)". Keep the path to relaunch from before that.
+    let app = std::env::current_exe().ok();
     let Action::Install { asset } = install.action(version)? else {
         return Err(Error::NotInstallable(install.label()));
     };
@@ -207,7 +210,7 @@ pub fn install(install: &Install, version: &str, staged: &Path) -> Result<Restar
         } else {
             Service::Detached
         },
-        app: std::env::current_exe().ok(),
+        app,
     })
 }
 

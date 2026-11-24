@@ -165,6 +165,7 @@ pub fn parse_release(json: &[u8]) -> Result<Release, UpdateError> {
 }
 
 /// Checks whether a release tag is newer than `current`.
+#[cfg(test)]
 pub fn is_newer(current: &str, tag: &str) -> Result<bool, UpdateError> {
     Ok(parse_tag(tag)? > parse_tag(current)?)
 }

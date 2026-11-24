@@ -19,6 +19,7 @@ mod theme;
 #[cfg(target_os = "linux")]
 mod tray;
 mod update;
+mod update_backend;
 #[cfg(target_os = "linux")]
 mod update_linux;
 #[cfg(target_os = "macos")]

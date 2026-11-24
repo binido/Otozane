@@ -192,8 +192,14 @@ fn show(app: &NSApplication) {
 // ponytail: the menu and the icon refresh only while the window draws frames,
 // a state or mode changed while hidden shows up on the next show. A status
 // poll thread posting to the main thread lifts this.
-pub fn on_frame(ctx: &egui::Context, status: Option<&Status>, stop_on_close: bool) {
+pub fn on_frame(
+    ctx: &egui::Context,
+    status: Option<&Status>,
+    stop_on_close: bool,
+    restarting: bool,
+) {
     if !stop_on_close
+        && !restarting
         && ctx.input(|i| i.viewport().close_requested())
         && let Some(mtm) = MainThreadMarker::new()
     {

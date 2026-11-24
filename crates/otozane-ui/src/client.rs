@@ -367,12 +367,24 @@ fn close_service(timeout: Duration) {
         let _ = client.request(&Request::Shutdown);
         // The next window must see a stopped service when it opens.
         #[cfg(target_os = "macos")]
-        {
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(2) && Client::connect().is_ok() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
+        wait_for_service_exit(Duration::from_secs(2));
+    }
+}
+
+/// Stops the service before an update replaces its binaries. The update's
+/// restart starts it again, so this ignores stop-on-close. It waits for the
+/// socket to close: the replaced service must not race the new one.
+pub fn stop_for_update() {
+    if let Ok(mut client) = connect_within(Duration::from_secs(2)) {
+        let _ = client.request(&Request::Shutdown);
+        wait_for_service_exit(Duration::from_secs(2));
+    }
+}
+
+fn wait_for_service_exit(timeout: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < timeout && Client::connect().is_ok() {
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 

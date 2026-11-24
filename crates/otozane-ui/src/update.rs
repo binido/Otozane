@@ -5,8 +5,9 @@
 //! a frame. The real GitHub release and platform installer code implements
 //! [`Backend`] in its own module. [`platform_backend`] is the single place this
 //! build selects one. The UI never restarts the app on its own: a check only
-//! finds a release, staging only downloads and verifies it, and applying (with
-//! its restart) happens after the user confirms.
+//! finds a release, staging only downloads and verifies it, applying installs
+//! it after the user confirms, and the restart runs once the service is
+//! stopped and the window is gone.
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +18,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Version of this build, e.g. `0.5.0`.
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Where verified downloads are staged, next to settings and profiles.
+pub fn staging_dir() -> std::path::PathBuf {
+    otozane_core::config::config_dir().join("updates")
 }
 
 /// Seconds since the Unix epoch, 0 before 1970.
@@ -97,8 +103,6 @@ pub enum Action {
     Update,
     /// Not supported from inside the app: open the release page instead.
     /// `hint` tells the user how this install is updated.
-    // Constructed by the platform backends, which live in their own modules.
-    #[allow(dead_code)]
     ReleasePage { hint: String },
 }
 
@@ -130,9 +134,13 @@ pub trait Backend: Send + 'static {
     /// Downloads and verifies the release without touching the running app.
     fn stage(&mut self, release: &Release) -> Result<(), String>;
 
-    /// Installs the staged update and restarts Otozane. Called only after the
-    /// user confirms the restart.
+    /// Installs the staged update. Called only after the user confirms the
+    /// restart. The app keeps running: [`Backend::restart`] does the handoff.
     fn apply(&mut self) -> Result<(), String>;
+
+    /// Starts the replacement after the UI stopped the service and closed its
+    /// window. Runs once on the UI thread, which then exits (or is replaced).
+    fn restart(&mut self) -> Result<(), String>;
 }
 
 /// Where the update process stands.
@@ -194,6 +202,7 @@ enum Command {
 pub struct Updater {
     tx: Sender<Command>,
     state: Arc<Mutex<State>>,
+    backend: Arc<Mutex<Box<dyn Backend>>>,
 }
 
 impl Updater {
@@ -204,12 +213,14 @@ impl Updater {
             last_check: prefs.last_check,
             ..Default::default()
         }));
+        let backend = Arc::new(Mutex::new(backend));
+        let worker = backend.clone();
         let st = state.clone();
         std::thread::Builder::new()
             .name("otozane-updates".into())
-            .spawn(move || run(backend, prefs, rx, st))
+            .spawn(move || run(worker, prefs, rx, st))
             .expect("failed to spawn update thread");
-        Self { tx, state }
+        Self { tx, state, backend }
     }
 
     pub fn snapshot(&self) -> State {
@@ -226,9 +237,19 @@ impl Updater {
         let _ = self.tx.send(Command::Stage);
     }
 
-    /// Installs the staged release and restarts. Confirmation is the UI's job.
+    /// Installs the staged release. Confirmation is the UI's job.
     pub fn apply(&self) {
         let _ = self.tx.send(Command::Apply);
+    }
+
+    /// Runs the platform restart. The UI calls it once it has stopped the
+    /// service and closed its window; this process ends or is replaced.
+    pub fn restart(&self) -> Result<(), String> {
+        let mut backend = self
+            .backend
+            .lock()
+            .map_err(|_| "The update thread stopped.".to_string())?;
+        backend.restart()
     }
 
     pub fn set_prefs(&self, prefs: Prefs) {
@@ -241,19 +262,19 @@ impl Updater {
 const IDLE_POLL: Duration = Duration::from_secs(60);
 
 fn run(
-    mut backend: Box<dyn Backend>,
+    backend: Arc<Mutex<Box<dyn Backend>>>,
     mut prefs: Prefs,
     rx: Receiver<Command>,
     state: Arc<Mutex<State>>,
 ) {
     if prefs.due(now()) {
-        check(&mut *backend, &state);
+        check(&mut **backend.lock().unwrap(), &state);
     }
     loop {
         match rx.recv_timeout(IDLE_POLL) {
             Ok(Command::Check) => {
                 if !busy(&state) {
-                    check(&mut *backend, &state);
+                    check(&mut **backend.lock().unwrap(), &state);
                 }
             }
             Ok(Command::SetPrefs(p)) => prefs = p,
@@ -263,20 +284,20 @@ fn run(
                     && release.action == Action::Update
                     && !busy(&state)
                 {
-                    stage(&mut *backend, &state, &release);
+                    stage(&mut **backend.lock().unwrap(), &state, &release);
                 }
             }
             Ok(Command::Apply) => {
                 let ready = state.lock().unwrap().phase == Phase::Ready;
                 if ready {
-                    apply(&mut *backend, &state);
+                    apply(&mut **backend.lock().unwrap(), &state);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
         if !busy(&state) && prefs.due(now()) {
-            check(&mut *backend, &state);
+            check(&mut **backend.lock().unwrap(), &state);
         }
     }
 }
@@ -368,30 +389,10 @@ pub fn take_open_settings() -> bool {
     OPEN_SETTINGS.swap(false, Ordering::Relaxed)
 }
 
-const NO_BACKEND: &str = "Updates are not available in this build. Download the latest version from https://github.com/binido/Otozane/releases/latest";
-
-/// Selects the update backend for this build.
-///
-/// The GitHub release backend and the platform installers implement [`Backend`]
-/// in their own modules. Replacing this function is the whole integration.
+/// Selects the update backend for this build: GitHub releases plus the
+/// installer that matches how Otozane was installed.
 pub fn platform_backend() -> Box<dyn Backend> {
-    Box::new(Unavailable)
-}
-
-struct Unavailable;
-
-impl Backend for Unavailable {
-    fn check(&mut self) -> Result<Option<Release>, String> {
-        Err(NO_BACKEND.to_string())
-    }
-
-    fn stage(&mut self, _release: &Release) -> Result<(), String> {
-        Err(NO_BACKEND.to_string())
-    }
-
-    fn apply(&mut self) -> Result<(), String> {
-        Err(NO_BACKEND.to_string())
-    }
+    crate::update_backend::backend()
 }
 
 #[cfg(test)]
@@ -413,21 +414,27 @@ mod tests {
         stage_error: Option<String>,
         staged: Arc<AtomicBool>,
         applied: Arc<AtomicBool>,
+        restarted: Arc<AtomicBool>,
     }
 
     impl FakeBackend {
-        fn new(check: Result<Option<Release>, String>) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+        fn new(
+            check: Result<Option<Release>, String>,
+        ) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>, Arc<AtomicBool>) {
             let staged = Arc::new(AtomicBool::new(false));
             let applied = Arc::new(AtomicBool::new(false));
+            let restarted = Arc::new(AtomicBool::new(false));
             (
                 Self {
                     check,
                     stage_error: None,
                     staged: staged.clone(),
                     applied: applied.clone(),
+                    restarted: restarted.clone(),
                 },
                 staged,
                 applied,
+                restarted,
             )
         }
     }
@@ -447,6 +454,16 @@ mod tests {
 
         fn apply(&mut self) -> Result<(), String> {
             self.applied.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn restart(&mut self) -> Result<(), String> {
+            if !self.applied.load(Ordering::SeqCst) {
+                return Err("The update was not installed.".into());
+            }
+            if self.restarted.swap(true, Ordering::SeqCst) {
+                return Err("The update already restarted.".into());
+            }
             Ok(())
         }
     }
@@ -481,7 +498,7 @@ mod tests {
 
     #[test]
     fn worker_checks_stages_and_applies() {
-        let (fake, staged, applied) = FakeBackend::new(Ok(Some(release())));
+        let (fake, staged, applied, _) = FakeBackend::new(Ok(Some(release())));
         let updater = Updater::spawn(Box::new(fake), Prefs::default());
         updater.check();
         let state = wait(&updater, |s| s.phase == Phase::Available);
@@ -499,7 +516,7 @@ mod tests {
 
     #[test]
     fn worker_runs_a_due_automatic_check_at_start() {
-        let (fake, _, _) = FakeBackend::new(Ok(None));
+        let (fake, _, _, _) = FakeBackend::new(Ok(None));
         let prefs = Prefs {
             check_automatically: true,
             interval: Interval::SixHours,
@@ -512,7 +529,7 @@ mod tests {
 
     #[test]
     fn recent_check_is_not_repeated_at_start() {
-        let (fake, _, _) = FakeBackend::new(Ok(Some(release())));
+        let (fake, _, _, _) = FakeBackend::new(Ok(Some(release())));
         let prefs = Prefs {
             check_automatically: true,
             interval: Interval::OneWeek,
@@ -526,7 +543,7 @@ mod tests {
     #[test]
     fn check_error_is_actionable_and_keeps_the_version() {
         let message = "Could not reach GitHub. Check your connection and try again.";
-        let (fake, _, _) = FakeBackend::new(Err(message.into()));
+        let (fake, _, _, _) = FakeBackend::new(Err(message.into()));
         let updater = Updater::spawn(Box::new(fake), Prefs::default());
         updater.check();
         let state = wait(&updater, |s| matches!(s.phase, Phase::Failed(_)));
@@ -537,7 +554,7 @@ mod tests {
 
     #[test]
     fn stage_error_keeps_the_release_for_a_retry() {
-        let (mut fake, staged, _) = FakeBackend::new(Ok(Some(release())));
+        let (mut fake, staged, _, _) = FakeBackend::new(Ok(Some(release())));
         fake.stage_error = Some("Checksum mismatch. The download was removed, try again.".into());
         let updater = Updater::spawn(Box::new(fake), Prefs::default());
         updater.check();
@@ -549,13 +566,44 @@ mod tests {
     }
 
     #[test]
-    fn no_backend_error_says_what_to_do() {
-        let updater = Updater::spawn(platform_backend(), Prefs::default());
+    fn apply_waits_for_staging_and_the_ui_handoff() {
+        let (fake, _, applied, restarted) = FakeBackend::new(Ok(Some(release())));
+        let updater = Updater::spawn(Box::new(fake), Prefs::default());
+
+        // Applying before a release was staged must not install anything.
+        updater.apply();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!applied.load(Ordering::SeqCst));
+
         updater.check();
-        let state = wait(&updater, |s| matches!(s.phase, Phase::Failed(_)));
-        let Phase::Failed(message) = state.phase else {
-            unreachable!()
+        wait(&updater, |s| s.phase == Phase::Available);
+        updater.apply();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!applied.load(Ordering::SeqCst), "the file was not staged");
+
+        updater.stage();
+        wait(&updater, |s| s.phase == Phase::Ready);
+        updater.apply();
+        wait(&updater, |s| s.phase == Phase::Restarting);
+        assert!(applied.load(Ordering::SeqCst));
+        // Installing is not restarting: only the UI handoff starts it.
+        assert!(!restarted.load(Ordering::SeqCst));
+
+        updater.restart().unwrap();
+        assert!(restarted.load(Ordering::SeqCst));
+        assert!(updater.restart().is_err(), "the handoff runs once");
+    }
+
+    #[test]
+    fn update_prefs_round_trip_for_ui_toml() {
+        let prefs = Prefs {
+            check_automatically: true,
+            interval: Interval::TwelveHours,
+            last_check: Some(42),
         };
-        assert!(message.contains("releases/latest"), "{message}");
+        let text = toml::to_string(&prefs).unwrap();
+        let back: Prefs = toml::from_str(&text).unwrap();
+        assert_eq!(back, prefs);
+        assert_eq!(toml::from_str::<Prefs>("").unwrap(), Prefs::default());
     }
 }

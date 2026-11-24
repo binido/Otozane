@@ -71,8 +71,13 @@ pub struct App {
     update_state: update::State,
     /// The user confirmed the restart that finishes a staged update.
     confirm_restart: bool,
+    /// The update is installed and the window is closing for the handoff.
+    restarting: bool,
     /// Last release version announced with a toast.
     seen_release: Option<String>,
+    /// The installed virtual microphone driver came from another build.
+    #[cfg(target_os = "macos")]
+    driver_needs_reinstall: bool,
     page: Page,
     settings: UiSettings,
     status: Option<Status>,
@@ -117,7 +122,10 @@ impl App {
             update_state: updates.snapshot(),
             updates,
             confirm_restart: false,
+            restarting: false,
             seen_release: None,
+            #[cfg(target_os = "macos")]
+            driver_needs_reinstall: crate::update_macos::driver_state().needs_reinstall,
             page: match std::env::var("OTOZANE_PAGE").as_deref() {
                 Ok("effects" | "plugins") => Page::Effects,
                 Ok("profiles") => Page::Profiles,
@@ -240,6 +248,14 @@ impl App {
         if update::take_open_settings() {
             self.page = Page::Settings;
             ctx.request_repaint();
+        }
+        if state.phase == update::Phase::Restarting && !self.restarting {
+            // The new version is installed. Save, stop the old service and let
+            // Drop run the platform handoff once the window is gone.
+            self.restarting = true;
+            self.settings.save();
+            client::stop_for_update();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.update_state = state;
     }
@@ -946,7 +962,9 @@ impl App {
             section(ui, "Virtual microphone");
             card(ui, |ui| {
                 let installed = crate::driver::installed();
-                let sub = if installed {
+                let sub = if installed && self.driver_needs_reinstall {
+                    "Installed from another release. Reinstall it to match Otozane"
+                } else if installed {
                     "Installed. Apps record from \u{201c}Otozane Microphone\u{201d}"
                 } else {
                     "Not installed. Asks for the administrator password"
@@ -1425,6 +1443,7 @@ impl eframe::App for App {
                 Err(e) => (format!("Virtual microphone: {e}"), true),
             };
             self.toasts.push((msg, Instant::now(), is_error));
+            self.driver_needs_reinstall = crate::update_macos::driver_state().needs_reinstall;
         }
         #[cfg(target_os = "macos")]
         if self.has_tray {
@@ -1432,6 +1451,7 @@ impl eframe::App for App {
                 ui.ctx(),
                 self.status.as_ref(),
                 self.setting_stop_on_close.unwrap_or(self.stop_on_close),
+                self.restarting,
             );
         }
         dev_screenshot(ui);
@@ -1538,6 +1558,13 @@ impl Drop for App {
             self.settings.save();
         }
         self.client.close();
+        // The service is stopped and the window is gone: replace the app now.
+        // On success this process is relaunched or a helper waits for it.
+        if self.restarting
+            && let Err(e) = self.updates.restart()
+        {
+            eprintln!("update: could not start the new version: {e}");
+        }
     }
 }
 

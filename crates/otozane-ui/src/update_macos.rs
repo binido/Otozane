@@ -33,11 +33,13 @@ pub struct Bundle {
 
 impl Bundle {
     /// `/Applications/Otozane.app`.
+    #[cfg(test)]
     pub fn app(&self) -> &Path {
         &self.app
     }
 
     /// `CFBundleShortVersionString` of the installed app.
+    #[cfg(test)]
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -173,18 +175,18 @@ pub struct Staged {
 }
 
 impl Staged {
+    #[cfg(test)]
     pub fn version(&self) -> &str {
         &self.version
     }
 
     /// Starts the helper that swaps the bundle once this process exits.
     ///
-    /// The caller must ask the service to shut down (`Request::Shutdown`) and
-    /// close the window after this returns; the helper waits up to a minute
-    /// for the process to go away, then replaces the app, starts the service
-    /// again (through the launchd agent when installed) and opens Otozane.
-    /// Nothing is replaced until the UI has exited, and the old app is put
-    /// back when a step fails.
+    /// The caller has stopped the service and closed its window. The helper
+    /// waits up to a minute for the process to go away, then replaces the app,
+    /// starts the service again (through the launchd agent when installed) and
+    /// opens Otozane. Nothing is replaced until the UI has exited, and the old
+    /// app is put back when a step fails.
     pub fn restart(self) -> Result<(), String> {
         let updates = self
             .app
@@ -267,7 +269,7 @@ fn stage_into(
 }
 
 fn update_dir() -> PathBuf {
-    otozane_core::config::config_dir().join("updates")
+    crate::update::staging_dir()
 }
 
 fn only_app(mount: &Path) -> Result<PathBuf, String> {

@@ -111,16 +111,35 @@ Limitations:
 
 **Settings → Updates** shows the installed version and checks
 [GitHub releases](https://github.com/binido/Otozane/releases/latest) on request.
-A newer version shows its release notes. **Update** downloads and verifies the
-release in the background while Otozane keeps running; **Restart and update**
-then installs it and restarts the app and the audio service. The restart always
-asks first, so a call or a recording never loses audio without confirmation.
-Installs the app cannot replace itself, such as an Arch package, show a link to
-the release page and the command to run instead.
+A newer version shows its release notes. **Update** downloads the asset for this
+platform and verifies it against the release's `SHA256SUMS` while Otozane keeps
+running. **Restart and update** asks once more, then installs it and restarts
+the app and the audio service. Audio stops for a few seconds during that
+restart and nothing restarts without the confirmation. A failed download,
+checksum or install leaves the installed version untouched and shows the reason
+in the section.
 
-**Check automatically** looks for updates while Otozane runs: every 6 hours,
-12 hours, 1 day (default) or 1 week. A found update is announced in the window,
-and the tray or menu bar entry becomes **Update to X**.
+What **Update** does depends on how Otozane was installed:
+
+| Install | Release asset | What happens |
+| --- | --- | --- |
+| macOS app in Applications | `otozane-vX-macos-arm64.dmg` | Mounts the DMG, checks the bundle id, version, architecture and signature, then replaces `Otozane.app`, restarts the audio service and opens the new app. If the virtual microphone driver changed, **Settings → Virtual microphone** offers a reinstall. |
+| Debian/Ubuntu package | `otozane_X-1_<arch>.deb` | `pkexec apt-get install` asks for the administrator password. |
+| Fedora/openSUSE package | `otozane-X-1.<arch>.rpm` | `pkexec dnf install`, or `zypper` on openSUSE. |
+| Tarball in a prefix, `~/.local` by default | `otozane-vX-linux-<arch>.tar.gz` | Replaces the files in the same prefix; a failed step rolls back to the previous version. |
+| Arch `otozane-bin` | none | No Update button. Otozane shows the version and the AUR command, for example `yay -S otozane-bin`. |
+| Unknown or unsupported method | none | No Update button, only a link to the release page. |
+
+An app running outside an `.app` bundle, from Gatekeeper's temporary
+App Translocation copy, or from a folder this user cannot write gets the
+release-page link instead.
+
+**Check automatically** looks for a new version while Otozane runs: every
+6 hours, 12 hours, 1 day (default) or 1 week. The setting and the last check
+time are saved in `ui.toml`, so a restart does not check again early. A found
+update is announced in the window and the tray or menu bar entry becomes
+**Update to X**. Downloading, installing and restarting still wait for that
+confirmation, so audio never stops for an update mid-call.
 
 ## Install
 
