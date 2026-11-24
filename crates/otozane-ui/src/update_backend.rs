@@ -1,5 +1,7 @@
 use crate::update::{self, Action, Backend, Release};
 use crate::update_release::{self, HttpTransport, Response, Transport, UpdateError};
+use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Builds the backend for this build's platform.
@@ -50,7 +52,13 @@ pub struct Github<T: Transport> {
 
 impl Github<Https> {
     fn new(transport: Https) -> Self {
-        Self::with_staging(transport, update::staging_dir())
+        let staging = update::staging_dir();
+        if let Err(e) = DownloadAttempt::reap_abandoned(&staging)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!("Could not clean up abandoned update downloads: {e}");
+        }
+        Self::with_staging(transport, staging)
     }
 }
 
@@ -115,11 +123,8 @@ impl<T: Transport + Send + 'static> Backend for Github<T> {
             return Err("Check for updates again before downloading.".into());
         }
         self.platform.discard();
-        std::fs::create_dir_all(&self.staging).map_err(|e| stage_message(UpdateError::Io(e)))?;
-        let archive = tempfile::Builder::new()
-            .prefix("download-")
-            .tempdir_in(&self.staging)
-            .map_err(|e| stage_message(UpdateError::Io(e)))?;
+        let archive =
+            DownloadAttempt::new(&self.staging).map_err(|e| stage_message(UpdateError::Io(e)))?;
         let path = update_release::download_verified(&self.transport, raw, asset, archive.path())
             .map_err(stage_message)?;
         self.platform.stage(path, &release.version, archive)
@@ -139,6 +144,59 @@ impl<T: Transport + Send + 'static> Backend for Github<T> {
 
     fn restart(&mut self) -> Result<(), String> {
         self.platform.restart()
+    }
+}
+
+struct DownloadAttempt {
+    dir: tempfile::TempDir,
+    _lease: File,
+}
+
+impl DownloadAttempt {
+    const PREFIX: &str = "download-attempt-";
+    const LEASE: &str = "active.lock";
+
+    fn new(staging: &Path) -> io::Result<Self> {
+        fs::create_dir_all(staging)?;
+        let registry = File::open(staging)?;
+        registry.lock()?;
+        let dir = tempfile::Builder::new()
+            .prefix(Self::PREFIX)
+            .tempdir_in(staging)?;
+        let lease = File::create(dir.path().join(Self::LEASE))?;
+        lease.lock()?;
+        Ok(Self { dir, _lease: lease })
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn reap_abandoned(staging: &Path) -> io::Result<()> {
+        // The registry lock covers the gap between creating a directory and locking its lease.
+        let registry = File::open(staging)?;
+        registry.lock()?;
+        for entry in fs::read_dir(staging)?.filter_map(Result::ok) {
+            if !entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(Self::PREFIX.as_bytes())
+                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            {
+                continue;
+            }
+            let path = entry.path();
+            match File::open(path.join(Self::LEASE)) {
+                Ok(lease) if lease.try_lock().is_ok() => {
+                    let _ = fs::remove_dir_all(path);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let _ = fs::remove_dir(path);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 
@@ -228,7 +286,7 @@ mod platform {
             &mut self,
             dmg: PathBuf,
             version: &str,
-            _archive: tempfile::TempDir,
+            _archive: DownloadAttempt,
         ) -> Result<(), String> {
             let bundle = self.bundle.as_ref().ok_or_else(|| {
                 "Otozane cannot update itself from here. Download the latest release instead."
@@ -272,7 +330,7 @@ mod platform {
     /// How this copy was installed, the verified download and the restart plan.
     pub struct Platform {
         install: Option<Install>,
-        staged: Option<(PathBuf, tempfile::TempDir)>,
+        staged: Option<(PathBuf, DownloadAttempt)>,
         restart: Option<(update_linux::Restart, std::fs::File)>,
     }
 
@@ -318,7 +376,7 @@ mod platform {
             &mut self,
             asset: PathBuf,
             _version: &str,
-            archive: tempfile::TempDir,
+            archive: DownloadAttempt,
         ) -> Result<(), String> {
             self.staged = Some((asset, archive));
             Ok(())
@@ -532,6 +590,20 @@ mod tests {
         assert!(error.contains("SHA256SUMS"), "{error}");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         assert!(backend.apply().is_err(), "nothing was installed");
+    }
+
+    #[test]
+    fn startup_reaps_partial_downloads_from_exited_workers_only() {
+        let staging = tempfile::tempdir().unwrap();
+        let active = DownloadAttempt::new(staging.path()).unwrap();
+        let abandoned = DownloadAttempt::new(staging.path()).unwrap();
+        fs::write(abandoned.path().join(".package.part"), "partial").unwrap();
+        let path = abandoned.dir.keep();
+        drop(abandoned._lease);
+
+        DownloadAttempt::reap_abandoned(staging.path()).unwrap();
+        assert!(active.path().is_dir());
+        assert!(!path.exists());
     }
 
     #[cfg(target_os = "linux")]

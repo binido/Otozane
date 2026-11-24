@@ -237,6 +237,11 @@ impl Client {
         })
     }
 
+    pub fn set_request_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()> {
+        self.writer.set_read_timeout(Some(timeout))?;
+        self.writer.set_write_timeout(Some(timeout))
+    }
+
     pub fn request(&mut self, req: &Request) -> std::io::Result<Response> {
         use std::io::{BufRead, Write};
         let mut line = serde_json::to_string(req)?;

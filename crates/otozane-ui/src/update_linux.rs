@@ -266,15 +266,29 @@ pub fn install(install: &Install, version: &str, staged: &Path) -> Result<(), Er
 }
 
 pub fn restart(plan: &Restart) -> io::Result<()> {
-    if !crate::client::service_is_running()? {
-        match plan.service {
-            Service::Systemd => crate::client::systemctl(&["restart", "otozane.service"])?,
-            Service::Detached => {
-                crate::client::start_detached_from(&plan.app.with_file_name("otozaned"))?
-            }
-        }
-        crate::client::wait_for_service_start()?;
+    use crate::client;
+
+    let executable = plan.app.with_file_name("otozaned");
+    let running = client::running_service_matches(&executable)?;
+    if running == Some(false) {
+        plan.stop()?;
     }
+    // A retry can reuse the replacement even if Stop left it holding the socket.
+    if running != Some(true) || !client::resume_service()? {
+        match plan.service {
+            Service::Systemd => client::systemctl(&["restart", "otozane.service"])?,
+            Service::Detached => client::start_detached_from(&executable)?,
+        }
+    }
+    client::wait_for_service(|peer, _| {
+        if client::service_matches_executable(peer, &executable)? {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "The running service still uses a different executable",
+            ))
+        }
+    })?;
     let mut app = Command::new(&plan.app).spawn()?;
     std::thread::spawn(move || {
         let _ = app.wait();

@@ -440,13 +440,75 @@ fn stop_for_update_at(
 }
 
 pub fn wait_for_service_start() -> std::io::Result<()> {
-    let mut client = connect_within(Duration::from_secs(4))?;
-    match client.request(&Request::Status)? {
-        Response::Status(_) => Ok(()),
-        response => Err(std::io::Error::other(format!(
-            "The audio service did not start: {response:?}"
-        ))),
+    wait_for_service(|_, _| Ok(()))
+}
+
+pub(crate) fn wait_for_service(
+    verify: impl Fn(&Client, &Status) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    wait_for_service_at(
+        &otozane_core::protocol::socket_path(),
+        Duration::from_secs(4),
+        verify,
+    )
+}
+
+fn wait_for_service_at(
+    path: &std::path::Path,
+    timeout: Duration,
+    verify: impl Fn(&Client, &Status) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let result = (|| {
+            let mut client = Client::connect_to(path)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            client.set_request_timeout(
+                remaining
+                    .min(Duration::from_millis(250))
+                    .max(Duration::from_millis(1)),
+            )?;
+            match client.request(&Request::Status)? {
+                Response::Status(status) => verify(&client, &status),
+                response => Err(std::io::Error::other(format!(
+                    "Unexpected service status: {response:?}"
+                ))),
+            }
+        })();
+        if result.is_ok() {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return result.map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("The audio service was not ready in time: {e}"),
+                )
+            });
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(50)));
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn running_service_matches(executable: &std::path::Path) -> std::io::Result<Option<bool>> {
+    update_connection(&otozane_core::protocol::socket_path())?
+        .map(|client| service_matches_executable(&client, executable))
+        .transpose()
+}
+
+#[cfg(target_os = "linux")]
+pub fn service_matches_executable(
+    client: &Client,
+    executable: &std::path::Path,
+) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let pid = service_peer_pid(client)?;
+    let running = std::fs::metadata(format!("/proc/{pid}/exe"))?;
+    let installed = std::fs::metadata(executable)?;
+    Ok((running.dev(), running.ino()) == (installed.dev(), installed.ino()))
 }
 
 fn wait_for_service_exit(path: &std::path::Path, timeout: Duration) -> std::io::Result<()> {
@@ -464,8 +526,8 @@ fn wait_for_service_exit(path: &std::path::Path, timeout: Duration) -> std::io::
 }
 
 #[cfg(target_os = "linux")]
-fn service_pidfd(client: &Client) -> std::io::Result<std::os::fd::OwnedFd> {
-    use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+fn service_peer_pid(client: &Client) -> std::io::Result<libc::pid_t> {
+    use std::os::fd::{AsFd, AsRawFd};
 
     let mut peer = libc::ucred {
         pid: 0,
@@ -493,8 +555,16 @@ fn service_pidfd(client: &Client) -> std::io::Result<std::os::fd::OwnedFd> {
             "The audio service is owned by another user",
         ));
     }
+    Ok(peer.pid)
+}
+
+#[cfg(target_os = "linux")]
+fn service_pidfd(client: &Client) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+
+    let pid = service_peer_pid(client)?;
     // SAFETY: pidfd_open takes a positive PID and zero flags.
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, peer.pid, 0u32) };
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0u32) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -779,7 +849,7 @@ pub fn start_service() -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn resume_service() -> std::io::Result<bool> {
+pub(crate) fn resume_service() -> std::io::Result<bool> {
     let Ok(mut client) = Client::connect() else {
         return Ok(false);
     };
@@ -829,6 +899,74 @@ pub use crate::launchd::{autostart_enabled, set_autostart, start_service};
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn update_readiness_retries_a_timed_out_status_request() {
+        use super::*;
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("readiness.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let thread = std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&first)
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line, "{\"cmd\":\"status\"}\n");
+            let (mut retry, _) = listener.accept().unwrap();
+            line.clear();
+            std::io::BufReader::new(&retry)
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line, "{\"cmd\":\"status\"}\n");
+            let response = Response::Status(Box::new(Status {
+                version: "0.6.0".into(),
+                capture: otozane_core::protocol::CaptureState::Starting,
+                input_device: None,
+                devices: Vec::new(),
+                virtual_source_ready: false,
+                processing_enabled: true,
+                stop_on_close: false,
+                muted: false,
+                monitoring: false,
+                input_peak: 0.0,
+                output_peak: 0.0,
+                chain: Vec::new(),
+                meters: Vec::new(),
+                effects: Vec::new(),
+                active_profile: "Default".into(),
+                diagnostics: Default::default(),
+            }));
+            writeln!(retry, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+        });
+        wait_for_service_at(&socket, Duration::from_secs(2), |_, status| {
+            assert_eq!(status.version, "0.6.0");
+            Ok(())
+        })
+        .unwrap();
+        thread.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_checks_the_socket_peers_executable_after_replacement() {
+        use super::*;
+        use std::os::unix::{fs::symlink, net::UnixListener};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("service.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let client = Client::connect_to(&socket).unwrap();
+        let installed = dir.path().join("otozaned");
+        symlink(std::env::current_exe().unwrap(), &installed).unwrap();
+        assert!(service_matches_executable(&client, &installed).unwrap());
+        std::fs::remove_file(&installed).unwrap();
+        symlink("/bin/true", &installed).unwrap();
+        assert!(!service_matches_executable(&client, &installed).unwrap());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn update_service_fixture() {

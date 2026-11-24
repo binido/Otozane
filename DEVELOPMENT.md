@@ -67,8 +67,10 @@ result and handles only the app bundle:
   starts the helper. The app exits after the helper starts. The helper waits
   up to a minute for that exit, swaps the bundles on the same filesystem,
   starts the service through launchd or as a detached process, and opens the
-  new app. If starting the service or opening the app fails, it stops the new
-  service before restoring the previous bundle.
+  new app after its audio service responds with the expected version. The
+  helper keeps the backup until both checks pass. If either fails, it stops
+  the replacement service before restoring the previous bundle. An existing
+  LaunchAgent must already point to the bundle being replaced.
 - `driver_state()` compares the virtual microphone driver in the bundle with
   the installed one. `needs_reinstall` tells Settings → Virtual microphone to
   offer a reinstall after the update.
@@ -76,7 +78,8 @@ result and handles only the app bundle:
 The downloaded DMG is removed after staging. The helper writes
 `last-update.log` under `~/Library/Application Support/Otozane/updates` (or
 `$XDG_CONFIG_HOME/otozane/updates`). If recovery fails, the helper logs the
-location of the backup beside the installed app. The macOS update tests use a
+location of the backup beside the installed app. The next app launch shows
+the helper's failure message in Settings → Updates. The macOS update tests use a
 signed fixture app and DMG in a temporary folder with stand-ins for
 `launchctl` and `open`.
 
@@ -108,8 +111,10 @@ need a real machine before the update can be called working:
 - With login start on, check that the launchd agent starts the service from
   the new bundle. With it off, the new app still opens and Start service works.
 - Let the app exit after confirmation and confirm that the helper replaces
-  the bundle. To test the timeout, keep the old process alive for one minute
-  and confirm that the helper leaves the bundle in place.
+  the bundle. To test the timeout, start with audio processing active and
+  keep the old app process alive for one minute after confirmation. Confirm
+  that the bundle stays in place and that the old audio service responds to
+  `Status` or records audio again.
 
 ## Scripts
 

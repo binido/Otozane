@@ -126,6 +126,30 @@ fn parse_size(s: &str) -> Option<[f32; 2]> {
 
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() == Some(std::ffi::OsStr::new("--wait-for-update-service")) {
+        let version = args
+            .next()
+            .ok_or_else(|| std::io::Error::other("No expected service version"));
+        if let Err(e) = version.and_then(|version| {
+            client::wait_for_service(|_, status| {
+                if version == std::ffi::OsStr::new(&status.version) {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(format!(
+                        "Expected audio service version {}, got {}",
+                        version.to_string_lossy(),
+                        status.version
+                    )))
+                }
+            })
+        }) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let updates = update::Updater::spawn(
         update::platform_backend(),
         app::UiSettings::load().updates,

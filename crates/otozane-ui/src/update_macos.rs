@@ -169,12 +169,12 @@ fn driver_version(driver: &Path) -> Option<String> {
 /// A validated app copy waiting for the current process to quit.
 #[derive(Debug)]
 pub struct Staged {
-    #[cfg(test)]
     version: String,
     work: Option<tempfile::TempDir>,
     target: PathBuf,
     installed_version: String,
     log: PathBuf,
+    failure: PathBuf,
 }
 
 impl Staged {
@@ -191,6 +191,17 @@ impl Staged {
         if app_version(&self.target).as_ref() != Some(&self.installed_version) {
             return Err("The installed bundle changed. Reopen Otozane to check again.".into());
         }
+        let plist = crate::launchd::plist_path().map_err(|e| e.to_string())?;
+        let agent = crate::launchd::snapshot_for_update(
+            &plist,
+            &work.path().join("agent.plist"),
+            &self.target.join("Contents/MacOS/otozaned"),
+        )?;
+        for path in [&self.target, work.path(), &self.failure] {
+            if path.to_str().is_none() {
+                return Err("The update location contains an unsupported path.".into());
+            }
+        }
         let was_running = client::service_is_running()
             .map_err(|e| format!("Could not check the audio service status: {e}"))?;
         let script = work.path().join("restart.sh");
@@ -202,8 +213,10 @@ impl Staged {
                 std::process::id(),
                 &self.target,
                 work.path(),
-                crate::launchd::plist_path().ok().as_deref(),
+                agent.as_deref(),
                 was_running,
+                &self.failure,
+                &self.version,
             ),
         )
         .map_err(|e| format!("Could not write the update helper: {e}"))?;
@@ -263,14 +276,14 @@ fn stage_into(
         copy_app(&only_app(mount.path())?, &app)?;
     }
     validate_app(&app, expected)?;
-    strip_quarantine(&app);
+    strip_quarantine(&app)?;
     Ok(Staged {
-        #[cfg(test)]
         version: expected.to_string(),
         work: Some(work),
         target: bundle.app.clone(),
         installed_version: bundle.version.clone(),
         log: updates.join("last-update.log"),
+        failure: updates.join("last-update-error"),
     })
 }
 
@@ -312,16 +325,18 @@ fn validate_app(app: &Path, expected: &str) -> Result<(), String> {
             "The DMG contains Otozane {version}, expected {expected}."
         ));
     }
-    let exe_name = plist_value(&text, "CFBundleExecutable")
-        .ok_or("The new app has no executable in its Info.plist.")?;
-    let exe = app.join("Contents/MacOS").join(exe_name);
-    let meta =
-        std::fs::metadata(&exe).map_err(|e| format!("The new app has no executable: {e}"))?;
-    if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
-        return Err("The new app's executable is not runnable.".into());
+    if plist_value(&text, "CFBundleExecutable").as_deref() != Some("otozane") {
+        return Err("The new app has an unexpected bundle executable.".into());
     }
-    if !is_arm64(&exe) {
-        return Err("The new app is not an Apple Silicon build.".into());
+    for executable in ["otozane", "otozaned"] {
+        let path = app.join("Contents/MacOS").join(executable);
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| format!("The new app is missing {executable}: {e}"))?;
+        if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 || !is_arm64(&path) {
+            return Err(format!(
+                "The new app has no runnable Apple Silicon {executable}."
+            ));
+        }
     }
     let mut cmd = Command::new("codesign");
     cmd.args(["--verify", "--deep", "--strict"]).arg(app);
@@ -329,13 +344,25 @@ fn validate_app(app: &Path, expected: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The app is ad-hoc signed, so Gatekeeper cannot assess it. Trust comes from
-/// the release checksum; without this flag the update would not open.
-fn strip_quarantine(app: &Path) {
-    let _ = Command::new("xattr")
-        .args(["-dr", "com.apple.quarantine"])
+/// Package verification precedes quarantine removal for the ad-hoc signed bundle.
+fn strip_quarantine(app: &Path) -> Result<(), String> {
+    const ATTR: &str = "com.apple.quarantine";
+    let _ = Command::new("/usr/bin/xattr")
+        .args(["-drs", ATTR])
         .arg(app)
-        .status();
+        .output()
+        .map_err(|e| format!("Could not remove the update's quarantine attribute: {e}"))?;
+    let names = run(
+        Command::new("/usr/bin/xattr").arg("-rs").arg(app),
+        "check the update's quarantine attributes",
+    )?;
+    if names
+        .lines()
+        .any(|line| line.ends_with(": com.apple.quarantine") || line == ATTR)
+    {
+        return Err("The staged update is still quarantined.".into());
+    }
+    Ok(())
 }
 
 fn is_arm64(exe: &Path) -> bool {
@@ -470,14 +497,32 @@ fn dir_writable(dir: &Path) -> bool {
     }
 }
 
-/// The helper script. It is a plain shell script on purpose: the app it
-/// replaces contains the binary that wrote it, so it must not be busy.
+pub fn take_failure() -> Option<String> {
+    take_failure_in(&crate::update::staging_dir())
+}
+
+fn take_failure_in(updates: &Path) -> Option<String> {
+    let path = updates.join("last-update-error");
+    if !path.is_file() {
+        return None;
+    }
+    let consumed = tempfile::NamedTempFile::new_in(updates).ok()?;
+    std::fs::rename(path, consumed.path()).ok()?;
+    let reason = std::fs::read_to_string(consumed.path()).ok()?;
+    Some(format!(
+        "{reason} See {} for details.",
+        updates.join("last-update.log").display()
+    ))
+}
+
 fn restart_script(
     pid: u32,
     target: &Path,
     work: &Path,
     plist: Option<&Path>,
     was_running: bool,
+    failure: &Path,
+    version: &str,
 ) -> String {
     let quote = |p: &Path| crate::driver::shell_quote(&p.to_string_lossy());
     format!(
@@ -486,14 +531,22 @@ target={}
 work={}
 plist={}
 was_running={}
+failure={}
+version={}
 domain="gui/$(id -u)"
 job="$domain/{label}"
 backup="$work/backup.app"
 service_pid=
+service_mode=detached
+[ -z "$plist" ] || service_mode=agent
+
+stop_agent() {{
+    launchctl bootout "$job" || ! launchctl print "$job"
+}}
 
 start_service() {{
-    if [ -f "$plist" ]; then
-        launchctl bootstrap "$domain" "$plist" || launchctl kickstart -k "$job"
+    if [ "$service_mode" = agent ]; then
+        stop_agent && launchctl bootstrap "$domain" "$plist"
     else
         [ -x "$target/Contents/MacOS/otozaned" ] || return 1
         nohup "$target/Contents/MacOS/otozaned" </dev/null >/dev/null 2>&1 &
@@ -501,33 +554,56 @@ start_service() {{
     fi
 }}
 
+wait_for_child_exit() {{
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$service_pid" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    ! kill -0 "$service_pid" 2>/dev/null
+}}
+
 stop_service() {{
-    if [ -f "$plist" ]; then
-        launchctl bootout "$job" || ! launchctl print "$job"
+    if [ "$service_mode" = agent ]; then
+        stop_agent
     elif [ -n "$service_pid" ]; then
-        if kill -0 "$service_pid" 2>/dev/null; then
-            kill -TERM "$service_pid" || return 1
+        kill -TERM "$service_pid" 2>/dev/null || :
+        if ! wait_for_child_exit; then
+            kill -KILL "$service_pid" 2>/dev/null || :
+            wait_for_child_exit || return 1
         fi
         wait "$service_pid" 2>/dev/null
         service_pid=
     fi
 }}
 
-restore_service() {{
-    if [ "$was_running" = 1 ]; then
-        start_service || echo "update: could not restart the previous audio service"
-    fi
+report_failure() {{
+    echo "update: $1"
+    report=$(mktemp "$failure.XXXXXX") || return 1
+    printf '%s' "$1" > "$report" && mv -f "$report" "$failure"
 }}
 
-restore() {{
-    if [ -e "$target" ] || ! mv "$backup" "$target"; then
-        echo "update: could not restore the old app from $backup"
-        exit 1
+restore_service() {{
+    [ "$was_running" != 1 ] || start_service
+}}
+
+reopen_previous() {{
+    reason=$1
+    if ! restore_service; then
+        reason="$reason Could not restart the previous audio service."
     fi
-    restore_service
+    report_failure "$reason"
     open "$target" || echo "update: could not reopen the previous app"
     rm -rf "$work"
     exit 1
+}}
+
+restore() {{
+    reason=$1
+    if [ -e "$target" ] || ! mv "$backup" "$target"; then
+        report_failure "$reason Could not restore the previous app from $backup."
+        exit 1
+    fi
+    reopen_previous "$reason The previous app was restored."
 }}
 
 cd / || exit 1
@@ -537,8 +613,11 @@ if [ "$pid" -gt 0 ]; then
     while kill -0 "$pid" 2>/dev/null; do
         n=$((n + 1))
         if [ "$n" -ge 300 ]; then
-            echo "update: the app did not quit in time"
-            restore_service
+            reason="The previous app did not exit in time. Its bundle was left in place."
+            if ! restore_service; then
+                reason="$reason Could not restart the previous audio service."
+            fi
+            report_failure "$reason"
             rm -rf "$work"
             exit 1
         fi
@@ -548,23 +627,24 @@ fi
 
 echo "update: replacing $target"
 if ! mv "$target" "$backup"; then
-    echo "update: could not move the current app aside"
-    restore_service
-    open "$target"
-    rm -rf "$work"
-    exit 1
+    reopen_previous "Could not move the previous app aside."
 fi
 if ! mv "$work/staged.app" "$target"; then
-    echo "update: could not install the new app, restoring"
-    restore
+    restore "Could not install the new app."
 fi
-if ! start_service || ! open "$target"; then
-    echo "update: could not start the new service or open the new app, restoring"
+reason=
+# The backup supplies the readiness probe for releases without that command.
+if ! start_service || ! "$backup/Contents/MacOS/otozane" --wait-for-update-service "$version" </dev/null; then
+    reason="The replacement audio service did not become ready."
+elif ! open "$target"; then
+    reason="Could not open the new app."
+fi
+if [ -n "$reason" ]; then
     if ! stop_service || ! mv "$target" "$work/failed.app"; then
-        echo "update: could not remove the failed update. The previous app is at $backup"
+        report_failure "$reason Could not remove the failed update. The previous app is at $backup."
         exit 1
     fi
-    restore
+    restore "$reason"
 fi
 rm -rf "$work"
 echo "update: done"
@@ -573,6 +653,8 @@ echo "update: done"
         quote(work),
         plist.map_or_else(|| "''".to_string(), quote),
         u8::from(was_running),
+        quote(failure),
+        crate::driver::shell_quote(version),
         label = crate::launchd::LABEL,
     )
 }
@@ -600,7 +682,9 @@ mod tests {
         )
         .unwrap();
         // A real Mach-O, so codesign and lipo have something to work with.
-        fs::copy("/bin/echo", app.join("Contents/MacOS/otozane")).unwrap();
+        for executable in ["otozane", "otozaned"] {
+            fs::copy("/bin/echo", app.join("Contents/MacOS").join(executable)).unwrap();
+        }
         app
     }
 
@@ -743,6 +827,24 @@ mod tests {
         assert!(err.contains("not newer"), "{err}");
     }
 
+    #[test]
+    fn quarantine_is_removed_from_nested_files_and_absence_is_accepted() {
+        let root = TempDir::new("otozane-quarantine").unwrap();
+        let child = root.path().join("file");
+        fs::write(&child, "").unwrap();
+        assert!(
+            Command::new("/usr/bin/xattr")
+                .args(["-w", "com.apple.quarantine", "0081;test"])
+                .arg(&child)
+                .status()
+                .unwrap()
+                .success()
+        );
+        strip_quarantine(root.path()).unwrap();
+        strip_quarantine(root.path()).unwrap();
+        assert!(strip_quarantine(&root.path().join("missing")).is_err());
+    }
+
     fn fake_tool(dir: &Path, name: &str) {
         let path = dir.join(name);
         fs::write(&path, "#!/bin/sh\necho \"$0 $@\" >> \"$MARK\"\nexit 0\n").unwrap();
@@ -765,23 +867,37 @@ mod tests {
         let log = root.path().join("last-update.log");
         let plist = root.path().join("agent.plist");
         fs::write(&plist, "").unwrap();
+        let failure = root.path().join("last-update-error");
         let app_marker = |dir: &Path| fs::read_to_string(dir.join("which")).unwrap();
         let make = |dir: &Path, which: &str| {
             fs::create_dir_all(dir).unwrap();
             fs::write(dir.join("which"), which).unwrap();
+            let macos = dir.join("Contents/MacOS");
+            fs::create_dir_all(&macos).unwrap();
+            let executable = macos.join("otozane");
+            fs::write(
+                &executable,
+                r#"#!/bin/sh
+echo "probe $*" >> "$MARK"
+[ "${PROBE_FAIL:-0}" = 0 ] && [ -d "$(dirname "$0")/../.." ]
+"#,
+            )
+            .unwrap();
+            fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
         };
-        let run = |pid| {
+        let run = |probe_fail| {
             fs::create_dir_all(&work).unwrap();
             let script = work.join("restart.sh");
             fs::write(
                 &script,
-                restart_script(pid, &target, &work, Some(&plist), true),
+                restart_script(0, &target, &work, Some(&plist), true, &failure, "0.6.0"),
             )
             .unwrap();
             let output = Command::new("sh")
                 .arg(&script)
                 .env("PATH", &path)
                 .env("MARK", &mark)
+                .env("PROBE_FAIL", if probe_fail { "1" } else { "0" })
                 .output()
                 .unwrap();
             fs::write(&log, output.stdout).unwrap();
@@ -790,12 +906,17 @@ mod tests {
 
         make(&target, "old");
         make(&staged, "new");
-        assert!(run(0).success());
+        assert!(run(false).success());
         assert_eq!(app_marker(&target), "new");
         assert!(!work.exists());
         let marks = fs::read_to_string(&mark).unwrap();
         assert!(marks.contains("launchctl bootstrap gui/"), "{marks}");
         assert!(marks.contains(&plist.display().to_string()), "{marks}");
+        assert!(
+            marks.contains("probe --wait-for-update-service 0.6.0"),
+            "{marks}"
+        );
+        assert!(!failure.exists());
         assert!(
             marks.contains(&format!("open {}", target.display())),
             "{marks}"
@@ -810,27 +931,59 @@ mod tests {
         fs::write(&mark, "").unwrap();
         make(&target, "old");
         make(&staged, "new");
-        assert!(!run(0).success());
+        assert!(!run(false).success());
         assert_eq!(app_marker(&target), "old");
         assert!(!work.exists());
+        let report = take_failure_in(root.path()).unwrap();
+        assert!(report.contains("Could not open the new app."), "{report}");
+        assert!(report.contains("restored"), "{report}");
+        assert!(take_failure_in(root.path()).is_none());
         let lines = fs::read_to_string(&mark).unwrap();
         let events: Vec<_> = lines.lines().collect();
-        assert_eq!(events.len(), 5, "{lines}");
-        assert!(events[0].contains("launchctl bootstrap"));
-        assert_eq!(events[1], "new");
-        assert!(events[2].contains("launchctl bootout"));
-        assert!(events[3].contains("launchctl bootstrap"));
-        assert_eq!(events[4], "old");
+        assert_eq!(events.len(), 8, "{lines}");
+        assert!(events[0].contains("launchctl bootout"));
+        assert!(events[1].contains("launchctl bootstrap"));
+        assert_eq!(events[2], "probe --wait-for-update-service 0.6.0");
+        assert_eq!(events[3], "new");
+        assert!(events[4].contains("launchctl bootout"));
+        assert!(events[6].contains("launchctl bootstrap"));
+        assert_eq!(events[7], "old");
+
+        fs::write(&mark, "").unwrap();
+        make(&staged, "new");
+        assert!(!run(true).success());
+        assert_eq!(app_marker(&target), "old");
+        let report = take_failure_in(root.path()).unwrap();
+        assert!(report.contains("did not become ready"), "{report}");
+        assert!(
+            !fs::read_to_string(&mark)
+                .unwrap()
+                .lines()
+                .any(|event| event == "new")
+        );
 
         // A missing staged app must leave the installed one exactly as it was.
         make(&target, "old");
-        assert!(!run(0).success());
+        assert!(!run(false).success());
         assert_eq!(app_marker(&target), "old");
         assert!(!work.exists());
-        assert!(fs::read_to_string(&log).unwrap().contains("restoring"));
+        assert!(
+            fs::read_to_string(&log)
+                .unwrap()
+                .contains("Could not install the new app")
+        );
     }
     #[test]
     fn helper_stops_the_detached_replacement_before_restoring_the_old_service() {
+        check_detached_rollback(false);
+    }
+
+    #[test]
+    fn helper_recovers_when_a_detached_replacement_does_not_exit_on_term() {
+        check_detached_rollback(true);
+    }
+
+    fn check_detached_rollback(ignore_term: bool) {
         let root = TempDir::new("otozane-detached-rollback").unwrap();
         let target = root.path().join("Otozane.app");
         let work = root.path().join("work");
@@ -839,10 +992,19 @@ mod tests {
         let daemon = r#"#!/bin/sh
 kind=$(cat "$(dirname "$0")/which")
 if [ "$kind" = new ]; then
-    trap 'echo "stop new" >> "$MARK"; exit 0' TERM
+    if [ "$IGNORE_TERM" = 1 ]; then
+        trap '' TERM
+    else
+        trap 'echo "stop new" >> "$MARK"; exit 0' TERM
+    fi
+    echo "$$" > "$CHILD_PID"
     echo "start new" >> "$MARK"
     while :; do sleep 0.05; done
 else
+    if kill -0 "$(cat "$CHILD_PID")" 2>/dev/null; then
+        echo "replacement still running" >> "$MARK"
+        exit 1
+    fi
     echo "start old" >> "$MARK"
 fi
 "#;
@@ -870,7 +1032,13 @@ echo "open $kind" >> "$MARK"
         .unwrap();
         fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
         let script = work.join("restart.sh");
-        fs::write(&script, restart_script(0, &target, &work, None, true)).unwrap();
+        fake_tool(&target.join("Contents/MacOS"), "otozane");
+        let failure = root.path().join("last-update-error");
+        fs::write(
+            &script,
+            restart_script(0, &target, &work, None, true, &failure, "0.6.0"),
+        )
+        .unwrap();
         let mark = root.path().join("events");
         fs::write(&mark, "").unwrap();
         let output = Command::new("/bin/sh")
@@ -880,14 +1048,25 @@ echo "open $kind" >> "$MARK"
                 format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
             )
             .env("MARK", &mark)
+            .env("IGNORE_TERM", if ignore_term { "1" } else { "0" })
+            .env("CHILD_PID", root.path().join("child.pid"))
             .output()
             .unwrap();
         assert!(!output.status.success());
         assert!(!work.exists());
-        assert_eq!(
-            fs::read_to_string(mark).unwrap(),
-            "start new\nopen new\nstop new\nstart old\nopen old\n"
-        );
+        let events = fs::read_to_string(mark).unwrap();
+        let ordered: Vec<_> = events
+            .lines()
+            .filter(|line| !line.contains("--wait-for-update-service"))
+            .collect();
+        if ignore_term {
+            assert_eq!(ordered, ["start new", "open new", "start old", "open old"]);
+        } else {
+            assert_eq!(
+                ordered,
+                ["start new", "open new", "stop new", "start old", "open old"]
+            );
+        }
         assert_eq!(
             fs::read_to_string(target.join("Contents/MacOS/which")).unwrap(),
             "old"

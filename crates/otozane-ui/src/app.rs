@@ -86,6 +86,8 @@ pub struct App {
     client: ServiceClient,
     updates: update::Updater,
     update_state: update::State,
+    #[cfg(target_os = "macos")]
+    last_update_failure: Option<String>,
     /// The user confirmed the restart that finishes a staged update.
     confirm_restart: bool,
     /// The update is installed and the window is closing for the handoff.
@@ -134,6 +136,20 @@ impl App {
         }
         theme::install(&cc.egui_ctx, settings.theme);
         let stop_on_close = client::stop_on_close_enabled();
+        let page = match std::env::var("OTOZANE_PAGE").as_deref() {
+            Ok("effects" | "plugins") => Page::Effects,
+            Ok("profiles") => Page::Profiles,
+            Ok("settings") => Page::Settings,
+            _ => Page::Overview,
+        };
+        #[cfg(target_os = "macos")]
+        let last_update_failure = crate::update_macos::take_failure();
+        #[cfg(target_os = "macos")]
+        let page = if last_update_failure.is_some() {
+            Page::Settings
+        } else {
+            page
+        };
         Self {
             client: ServiceClient::spawn(cc.egui_ctx.clone(), stop_on_close),
             update_state: updates.snapshot(),
@@ -143,12 +159,9 @@ impl App {
             seen_release: None,
             #[cfg(target_os = "macos")]
             driver_needs_reinstall: crate::update_macos::driver_state().needs_reinstall,
-            page: match std::env::var("OTOZANE_PAGE").as_deref() {
-                Ok("effects" | "plugins") => Page::Effects,
-                Ok("profiles") => Page::Profiles,
-                Ok("settings") => Page::Settings,
-                _ => Page::Overview,
-            },
+            page,
+            #[cfg(target_os = "macos")]
+            last_update_failure,
             settings,
             status: None,
             connection: Connection::Connecting,
@@ -1182,6 +1195,11 @@ impl App {
                     }
                 },
             );
+            #[cfg(target_os = "macos")]
+            if let Some(message) = &self.last_update_failure {
+                widgets::divider(ui);
+                self.error_row(ui, &p, message);
+            }
             match &st.release {
                 Some(release) => self.release_section(ui, &p, &st, release),
                 None => match &phase {
