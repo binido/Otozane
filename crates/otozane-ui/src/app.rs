@@ -1007,12 +1007,18 @@ impl App {
                 });
             }
         });
-        if let Err(e) = about::section(ui) {
-            self.toasts.push((
-                format!("Could not open the Otozane repository: {e}"),
-                Instant::now(),
-                true,
-            ));
+        if about::section(ui) {
+            let state = self.client.state.clone();
+            let report_error = move |error| {
+                state.lock().unwrap().messages.push((
+                    format!("Could not open the Otozane repository: {error}"),
+                    true,
+                ));
+            };
+            if let Err(error) = about::open_repository(ui.ctx().clone(), report_error.clone()) {
+                report_error(error);
+                ui.ctx().request_repaint();
+            }
         }
         let Some(st) = self.status.clone() else {
             return;

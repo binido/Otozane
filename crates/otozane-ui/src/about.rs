@@ -2,18 +2,18 @@
 
 use crate::widgets::{self, card, row, section_with};
 use egui::Ui;
+use std::io;
+use std::process::{Command, Stdio};
 
 const REPOSITORY: &str = "https://github.com/binido/Otozane";
 const CREATOR: &str = "Binido";
 
 /// Shows the build version, license, creator and a link to the repository.
-/// Returns an error if the system browser could not be started.
-pub fn section(ui: &mut Ui) -> std::io::Result<()> {
-    let mut opened = Ok(());
+/// Returns whether the repository link was clicked.
+pub fn section(ui: &mut Ui) -> bool {
+    let mut clicked = false;
     section_with(ui, "About Otozane", |ui| {
-        if widgets::link(ui, "GitHub repository").clicked() {
-            opened = open_in_browser(REPOSITORY);
-        }
+        clicked = widgets::link(ui, "GitHub repository").clicked();
     });
     card(ui, |ui| {
         row(ui, "Version", None, |ui| {
@@ -28,19 +28,52 @@ pub fn section(ui: &mut Ui) -> std::io::Result<()> {
             ui.label(widgets::medium(CREATOR));
         });
     });
-    opened
+    clicked
 }
 
-/// Hands the URL to the desktop's default browser.
-fn open_in_browser(url: &str) -> std::io::Result<()> {
+/// Opens the repository in the default browser on a background thread.
+pub fn open_repository(
+    ctx: egui::Context,
+    report_error: impl FnOnce(io::Error) + Send + 'static,
+) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     let opener = "open";
     #[cfg(not(target_os = "macos"))]
     let opener = "xdg-open";
-    std::process::Command::new(opener)
-        .arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
+
+    std::thread::Builder::new().spawn(move || {
+        if let Err(error) = run_opener(Command::new(opener).arg(REPOSITORY)) {
+            report_error(error);
+            ctx.request_repaint();
+        }
+    })?;
+    Ok(())
+}
+
+fn run_opener(command: &mut Command) -> io::Result<()> {
+    let status = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("opener returned {status}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_an_unsuccessful_opener_exit() {
+        let error = run_opener(Command::new("/bin/sh").args(["-c", "exit 4"])).unwrap_err();
+        assert!(error.to_string().contains("exit status: 4"));
+    }
+
+    #[test]
+    fn accepts_a_successful_opener_exit() {
+        run_opener(Command::new("/bin/sh").args(["-c", "exit 0"])).unwrap();
+    }
 }
