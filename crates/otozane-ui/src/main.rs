@@ -19,6 +19,8 @@ mod theme;
 #[cfg(target_os = "linux")]
 mod tray;
 mod update;
+#[cfg(target_os = "linux")]
+mod update_linux;
 mod update_release;
 mod widgets;
 
