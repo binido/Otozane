@@ -3,6 +3,31 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
+## 0.6.0 - 2026-11-24
+
+### New
+
+- **Settings → Updates** checks GitHub for new versions and shows their
+  release notes. On supported installations, Otozane verifies the download
+  against the release checksums and asks before installing and restarting.
+  Optional automatic checks run every 6 hours, 12 hours, 1 day (default), or
+  1 week. Arch and unsupported installations get a link to the release.
+- **Settings → About Otozane** shows the installed version, the MIT license,
+  and creator Binido offline. It also links to the GitHub repository.
+- **AI** and **Heavy** badges identify neural effects and presets that use
+  them and show where processing may take more CPU time.
+
+### Fixed
+
+- Button labels and the **Voice** preset text are centered in their controls.
+
+### Upgrading
+
+- Install 0.6.0 using the [existing installation steps](https://github.com/binido/Otozane#install).
+  The in-app updater is available starting with this version.
+
+**Full diff**: https://github.com/binido/Otozane/compare/v0.5.0...v0.6.0
+
 ## 0.5.0 - 2026-11-22
 
 ### New
