@@ -187,7 +187,7 @@ impl Staged {
             .work
             .as_ref()
             .ok_or("The update was already handed off.")?;
-        let lock = crate::update::installation_lock()?;
+        let lock = crate::update::installation_lock().map_err(|e| e.to_string())?;
         if app_version(&self.target).as_ref() != Some(&self.installed_version) {
             return Err("The installed bundle changed. Reopen Otozane to check again.".into());
         }
@@ -541,12 +541,28 @@ service_mode=detached
 [ -z "$plist" ] || service_mode=agent
 
 stop_agent() {{
-    launchctl bootout "$job" || ! launchctl print "$job"
+    # Status 113 from launchctl print means the service is absent.
+    bootout_status=0
+    launchctl bootout "$job" || bootout_status=$?
+    attempts=0
+    while [ "$attempts" -lt 20 ]; do
+        print_status=0
+        launchctl print "$job" >/dev/null 2>&1 || print_status=$?
+        case "$print_status" in
+            113) return 0 ;;
+            0) [ "$bootout_status" -eq 0 ] || return 1 ;;
+            *) echo "update: could not check the launchd job (exit $print_status)"; return 1 ;;
+        esac
+        attempts=$((attempts + 1))
+        sleep 0.1
+    done
+    echo "update: the launchd job did not unload"
+    return 1
 }}
 
 start_service() {{
     if [ "$service_mode" = agent ]; then
-        stop_agent && launchctl bootstrap "$domain" "$plist"
+        launchctl bootstrap "$domain" "$plist"
     else
         [ -x "$target/Contents/MacOS/otozaned" ] || return 1
         nohup "$target/Contents/MacOS/otozaned" </dev/null >/dev/null 2>&1 &
@@ -583,7 +599,11 @@ report_failure() {{
 }}
 
 restore_service() {{
-    [ "$was_running" != 1 ] || start_service
+    [ "$was_running" = 1 ] || return 0
+    if [ "$service_mode" = agent ]; then
+        stop_agent || return 1
+    fi
+    start_service
 }}
 
 reopen_previous() {{
@@ -625,6 +645,9 @@ if [ "$pid" -gt 0 ]; then
     done
 fi
 
+if [ "$service_mode" = agent ] && ! stop_agent; then
+    reopen_previous "Could not unload the Otozane LaunchAgent. The previous bundle was left in place."
+fi
 echo "update: replacing $target"
 if ! mv "$target" "$backup"; then
     reopen_previous "Could not move the previous app aside."
@@ -856,8 +879,30 @@ mod tests {
         let root = TempDir::new("otozane-helper").unwrap();
         let bin = root.path().join("bin");
         fs::create_dir(&bin).unwrap();
-        fake_tool(&bin, "launchctl");
         fake_tool(&bin, "open");
+        let launchctl = bin.join("launchctl");
+        fs::write(
+            &launchctl,
+            r#"#!/bin/sh
+echo "$0 $@" >> "$MARK"
+case "$1" in
+    bootout)
+        printf 2 > "$PENDING_REMOVAL"
+        ;;
+    print)
+        [ "$HOLD_AGENT" = 1 ] && exit 0
+        pending=$(cat "$PENDING_REMOVAL")
+        [ "$pending" -gt 0 ] || exit 113
+        printf '%s' "$((pending - 1))" > "$PENDING_REMOVAL"
+        ;;
+    bootstrap)
+        [ "$(cat "$PENDING_REMOVAL")" = 0 ]
+        ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(launchctl, fs::Permissions::from_mode(0o755)).unwrap();
         let mark = root.path().join("mark");
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
 
@@ -885,7 +930,7 @@ echo "probe $*" >> "$MARK"
             .unwrap();
             fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
         };
-        let run = |probe_fail| {
+        let run = |probe_fail, hold_agent| {
             fs::create_dir_all(&work).unwrap();
             let script = work.join("restart.sh");
             fs::write(
@@ -898,6 +943,8 @@ echo "probe $*" >> "$MARK"
                 .env("PATH", &path)
                 .env("MARK", &mark)
                 .env("PROBE_FAIL", if probe_fail { "1" } else { "0" })
+                .env("HOLD_AGENT", if hold_agent { "1" } else { "0" })
+                .env("PENDING_REMOVAL", root.path().join("pending-removal"))
                 .output()
                 .unwrap();
             fs::write(&log, output.stdout).unwrap();
@@ -906,11 +953,16 @@ echo "probe $*" >> "$MARK"
 
         make(&target, "old");
         make(&staged, "new");
-        assert!(run(false).success());
+        assert!(run(false, false).success());
         assert_eq!(app_marker(&target), "new");
         assert!(!work.exists());
         let marks = fs::read_to_string(&mark).unwrap();
-        assert!(marks.contains("launchctl bootstrap gui/"), "{marks}");
+        let commands: Vec<_> = marks.lines().take(5).collect();
+        assert!(commands[0].contains("launchctl bootout"), "{marks}");
+        for command in &commands[1..4] {
+            assert!(command.contains("launchctl print"), "{marks}");
+        }
+        assert!(commands[4].contains("launchctl bootstrap"), "{marks}");
         assert!(marks.contains(&plist.display().to_string()), "{marks}");
         assert!(
             marks.contains("probe --wait-for-update-service 0.6.0"),
@@ -931,7 +983,7 @@ echo "probe $*" >> "$MARK"
         fs::write(&mark, "").unwrap();
         make(&target, "old");
         make(&staged, "new");
-        assert!(!run(false).success());
+        assert!(!run(false, false).success());
         assert_eq!(app_marker(&target), "old");
         assert!(!work.exists());
         let report = take_failure_in(root.path()).unwrap();
@@ -939,7 +991,10 @@ echo "probe $*" >> "$MARK"
         assert!(report.contains("restored"), "{report}");
         assert!(take_failure_in(root.path()).is_none());
         let lines = fs::read_to_string(&mark).unwrap();
-        let events: Vec<_> = lines.lines().collect();
+        let events: Vec<_> = lines
+            .lines()
+            .filter(|line| !line.contains("launchctl print"))
+            .collect();
         assert_eq!(events.len(), 8, "{lines}");
         assert!(events[0].contains("launchctl bootout"));
         assert!(events[1].contains("launchctl bootstrap"));
@@ -951,7 +1006,7 @@ echo "probe $*" >> "$MARK"
 
         fs::write(&mark, "").unwrap();
         make(&staged, "new");
-        assert!(!run(true).success());
+        assert!(!run(true, false).success());
         assert_eq!(app_marker(&target), "old");
         let report = take_failure_in(root.path()).unwrap();
         assert!(report.contains("did not become ready"), "{report}");
@@ -964,13 +1019,25 @@ echo "probe $*" >> "$MARK"
 
         // A missing staged app must leave the installed one exactly as it was.
         make(&target, "old");
-        assert!(!run(false).success());
+        assert!(!run(false, false).success());
         assert_eq!(app_marker(&target), "old");
         assert!(!work.exists());
         assert!(
             fs::read_to_string(&log)
                 .unwrap()
                 .contains("Could not install the new app")
+        );
+
+        fs::write(&mark, "").unwrap();
+        make(&staged, "new");
+        assert!(!run(false, true).success());
+        assert_eq!(app_marker(&target), "old");
+        let report = take_failure_in(root.path()).unwrap();
+        assert!(report.contains("Could not unload"), "{report}");
+        assert!(
+            !fs::read_to_string(&mark)
+                .unwrap()
+                .contains("launchctl bootstrap")
         );
     }
     #[test]

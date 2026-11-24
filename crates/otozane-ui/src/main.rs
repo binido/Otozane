@@ -132,7 +132,7 @@ fn main() -> eframe::Result {
             .next()
             .ok_or_else(|| std::io::Error::other("No expected service version"));
         if let Err(e) = version.and_then(|version| {
-            client::wait_for_service(|_, status| {
+            client::wait_for_updated_service(|_, status| {
                 if version == std::ffi::OsStr::new(&status.version) {
                     Ok(())
                 } else {

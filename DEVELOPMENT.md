@@ -94,10 +94,14 @@ download and the release's `SHA256SUMS`, not on the signature.
 Automatic tests cover the bundle checks and the swap/rollback helper. These
 need a real machine before the update can be called working:
 
-- Update from the previous release to a test release with Otozane in
-  `/Applications`, as an admin user and as a non-admin user. The app opens
-  again, shows the new version, `otozaned` is running and Otozane Microphone
-  records.
+- Build two test versions from sources that contain the updater. Install the
+  lower-version build in `/Applications` and use Settings → Updates to
+  install the higher-version test release. Repeat as an admin user and as a
+  non-admin user. Confirm that the app reopens, shows the new version,
+  `otozaned` is running and Otozane Microphone records.
+- Separately, install v0.5.0 and upgrade it manually by replacing the app
+  bundle with the test release. Launch the replacement and repeat the app
+  version and microphone checks. v0.5.0 has no in-app updater.
 - Start from a freshly downloaded DMG on a Mac that has never run Otozane.
   The updated app launches without the right-click → Open step.
 - Install the driver from the old release, update to a release with a changed

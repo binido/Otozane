@@ -70,14 +70,30 @@ impl Restart {
             )
             .into());
         }
-        Ok(Self {
+        let plan = Self {
             service: if user_unit_exists() {
                 Service::Systemd
             } else {
                 Service::Detached
             },
             app,
-        })
+        };
+        plan.validate_unit()?;
+        Ok(plan)
+    }
+
+    fn executable(&self) -> PathBuf {
+        self.app.with_file_name("otozaned")
+    }
+
+    fn validate_unit(&self) -> io::Result<()> {
+        if self.service == Service::Systemd {
+            let commands = systemd_exec_start().map_err(|e| {
+                io::Error::other(format!("Could not verify the systemd user service: {e}"))
+            })?;
+            validate_exec_start(&commands, &self.executable())?;
+        }
+        Ok(())
     }
 
     pub fn stop(&self) -> io::Result<()> {
@@ -88,6 +104,52 @@ impl Restart {
             Ok(())
         })
     }
+}
+
+type ExecStart = (String, Vec<String>, bool, u64, u64, u64, u64, u32, i32, i32);
+
+fn systemd_exec_start() -> zbus::Result<Vec<ExecStart>> {
+    use zbus::blocking::{Proxy, connection::Builder};
+    use zbus::zvariant::OwnedObjectPath;
+
+    const SERVICE: &str = "org.freedesktop.systemd1";
+    const UNIT: &str = "otozane.service";
+    let bus = Builder::session()?
+        .method_timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let manager = Proxy::new(
+        &bus,
+        SERVICE,
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+    )?;
+    // An inactive unit can be unloaded between calls without a reference.
+    manager.call::<_, _, ()>("RefUnit", &(UNIT,))?;
+    let unit: OwnedObjectPath = manager.call("GetUnit", &(UNIT,))?;
+    Proxy::new(&bus, SERVICE, unit, "org.freedesktop.systemd1.Service")?.get_property("ExecStart")
+}
+
+fn validate_exec_start(commands: &[ExecStart], executable: &Path) -> io::Result<()> {
+    let [command] = commands else {
+        return Err(io::Error::other(
+            "Could not verify a single ExecStart for the Otozane user service.",
+        ));
+    };
+    let configured = Path::new(&command.0);
+    if configured == executable
+        || (configured.is_absolute()
+            && fs::canonicalize(configured)
+                .ok()
+                .zip(fs::canonicalize(executable).ok())
+                .is_some_and(|(configured, expected)| configured == expected))
+    {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "The systemd user service starts {} instead of {}. In this copy of Otozane, turn Start with session off and back on under Settings → Background, then retry the update.",
+        configured.display(),
+        executable.display()
+    )))
 }
 
 #[derive(Debug)]
@@ -268,7 +330,8 @@ pub fn install(install: &Install, version: &str, staged: &Path) -> Result<(), Er
 pub fn restart(plan: &Restart) -> io::Result<()> {
     use crate::client;
 
-    let executable = plan.app.with_file_name("otozaned");
+    plan.validate_unit()?;
+    let executable = plan.executable();
     let running = client::running_service_matches(&executable)?;
     if running == Some(false) {
         plan.stop()?;
@@ -280,7 +343,7 @@ pub fn restart(plan: &Restart) -> io::Result<()> {
             Service::Detached => client::start_detached_from(&executable)?,
         }
     }
-    client::wait_for_service(|peer, _| {
+    client::wait_for_updated_service(|peer, _| {
         if client::service_matches_executable(peer, &executable)? {
             Ok(())
         } else {
@@ -625,6 +688,32 @@ fn remove_any(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn effective_exec_start_must_point_to_this_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("bin with spaces/otozaned");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, "").unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&executable, &alias).unwrap();
+        let command = |path: &Path| {
+            let path = path.to_str().unwrap().to_owned();
+            (path.clone(), vec![path], false, 0, 0, 0, 0, 0, 0, 0)
+        };
+
+        validate_exec_start(&[command(&executable)], &executable).unwrap();
+        validate_exec_start(&[command(&alias)], &executable).unwrap();
+        let stale = command(Path::new("/other/prefix/bin/otozaned"));
+        assert!(
+            validate_exec_start(std::slice::from_ref(&stale), &executable)
+                .unwrap_err()
+                .to_string()
+                .contains("Start with session")
+        );
+        assert!(validate_exec_start(&[command(&executable), stale], &executable).is_err());
+        assert!(validate_exec_start(&[], &executable).is_err());
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

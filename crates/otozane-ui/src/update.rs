@@ -395,12 +395,23 @@ fn restart(backend: &mut dyn Backend, state: &Mutex<State>) {
     );
 }
 
-pub(crate) fn installation_lock() -> Result<std::fs::File, String> {
-    let lock = std::fs::File::create(staging_dir().join("install.lock"))
-        .map_err(|e| format!("Could not open the update lock: {e}"))?;
-    lock.try_lock()
-        .map_err(|e| format!("Could not lock the installation for an update: {e}"))?;
-    Ok(lock)
+pub(crate) fn installation_lock() -> std::io::Result<std::fs::File> {
+    lock_installation_in(&staging_dir())
+}
+
+fn lock_installation_in(staging: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::fs::{File, TryLockError};
+
+    std::fs::create_dir_all(staging)?;
+    let lock = File::create(staging.join("install.lock"))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "Otozane is updating or changing its startup settings. Try again when it finishes.",
+        )),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Opens the release page in the system browser. Only web addresses from the
@@ -446,6 +457,19 @@ pub fn platform_backend() -> Box<dyn Backend> {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn settings_and_updates_can_lock_a_fresh_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("updates");
+        let update = lock_installation_in(&staging).unwrap();
+        assert_eq!(
+            lock_installation_in(&staging).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(update);
+        assert!(lock_installation_in(&staging).is_ok());
+    }
 
     fn release() -> Release {
         Release {

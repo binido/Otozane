@@ -3228,6 +3228,7 @@ dependencies = [
  "tempfile",
  "toml 0.8.2",
  "tray-icon",
+ "zbus",
 ]
 
 [[package]]

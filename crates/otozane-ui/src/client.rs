@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(33);
+const UPDATE_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Master processing mode, shown as one three-way choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +313,8 @@ fn connect_within(timeout: Duration) -> std::io::Result<Client> {
 fn apply_stop_on_close(state: &Mutex<State>, enabled: bool) {
     let mut unconfirmed = false;
     let result = (|| {
+        #[cfg(target_os = "macos")]
+        let _installation_lock = crate::update::installation_lock()?;
         start_window_service()?;
         let mut client = connect_within(Duration::from_secs(4))?;
         let login = enabled.then(LoginStart::read).transpose()?;
@@ -440,15 +443,19 @@ fn stop_for_update_at(
 }
 
 pub fn wait_for_service_start() -> std::io::Result<()> {
-    wait_for_service(|_, _| Ok(()))
+    wait_for_service_at(
+        &otozane_core::protocol::socket_path(),
+        Duration::from_secs(4),
+        |_, _| Ok(()),
+    )
 }
 
-pub(crate) fn wait_for_service(
+pub(crate) fn wait_for_updated_service(
     verify: impl Fn(&Client, &Status) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     wait_for_service_at(
         &otozane_core::protocol::socket_path(),
-        Duration::from_secs(4),
+        UPDATE_START_TIMEOUT,
         verify,
     )
 }
@@ -899,6 +906,63 @@ pub use crate::launchd::{autostart_enabled, set_autostart, start_service};
 
 #[cfg(test)]
 mod tests {
+    fn ready_status() -> super::Response {
+        use super::{Response, Status};
+
+        Response::Status(Box::new(Status {
+            version: "0.6.0".into(),
+            capture: otozane_core::protocol::CaptureState::Starting,
+            input_device: None,
+            devices: Vec::new(),
+            virtual_source_ready: false,
+            processing_enabled: true,
+            stop_on_close: false,
+            muted: false,
+            monitoring: false,
+            input_peak: 0.0,
+            output_peak: 0.0,
+            chain: Vec::new(),
+            meters: Vec::new(),
+            effects: Vec::new(),
+            active_profile: "Default".into(),
+            diagnostics: Default::default(),
+        }))
+    }
+
+    #[test]
+    fn update_readiness_allows_more_than_the_regular_startup_budget() {
+        use super::*;
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("slow.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let start = Instant::now();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(4200));
+            let response = serde_json::to_string(&ready_status()).unwrap();
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut request = String::new();
+                std::io::BufReader::new(&stream)
+                    .read_line(&mut request)
+                    .unwrap();
+                assert_eq!(request, "{\"cmd\":\"status\"}\n");
+                if writeln!(stream, "{response}").is_ok() {
+                    break;
+                }
+            }
+        });
+        wait_for_service_at(&socket, UPDATE_START_TIMEOUT, |_, status| {
+            assert_eq!(status.version, "0.6.0");
+            Ok(())
+        })
+        .unwrap();
+        assert!(start.elapsed() > Duration::from_secs(4));
+        thread.join().unwrap();
+    }
+
     #[test]
     fn update_readiness_retries_a_timed_out_status_request() {
         use super::*;
@@ -921,24 +985,7 @@ mod tests {
                 .read_line(&mut line)
                 .unwrap();
             assert_eq!(line, "{\"cmd\":\"status\"}\n");
-            let response = Response::Status(Box::new(Status {
-                version: "0.6.0".into(),
-                capture: otozane_core::protocol::CaptureState::Starting,
-                input_device: None,
-                devices: Vec::new(),
-                virtual_source_ready: false,
-                processing_enabled: true,
-                stop_on_close: false,
-                muted: false,
-                monitoring: false,
-                input_peak: 0.0,
-                output_peak: 0.0,
-                chain: Vec::new(),
-                meters: Vec::new(),
-                effects: Vec::new(),
-                active_profile: "Default".into(),
-                diagnostics: Default::default(),
-            }));
+            let response = ready_status();
             writeln!(retry, "{}", serde_json::to_string(&response).unwrap()).unwrap();
         });
         wait_for_service_at(&socket, Duration::from_secs(2), |_, status| {

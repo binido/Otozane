@@ -175,7 +175,11 @@ impl DownloadAttempt {
     fn reap_abandoned(staging: &Path) -> io::Result<()> {
         // The registry lock covers the gap between creating a directory and locking its lease.
         let registry = File::open(staging)?;
-        registry.lock()?;
+        match registry.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        }
         for entry in fs::read_dir(staging)?.filter_map(Result::ok) {
             if !entry
                 .file_name()
@@ -391,7 +395,7 @@ mod platform {
                 .staged
                 .as_ref()
                 .ok_or_else(|| "The update is not downloaded yet.".to_string())?;
-            let lock = update::installation_lock()?;
+            let lock = update::installation_lock().map_err(|e| e.to_string())?;
             let plan = update_linux::Restart::current().map_err(|e| e.to_string())?;
             let was_running = crate::client::service_is_running()
                 .map_err(|e| format!("Could not check the audio service status: {e}"))?;
@@ -590,6 +594,30 @@ mod tests {
         assert!(error.contains("SHA256SUMS"), "{error}");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         assert!(backend.apply().is_err(), "nothing was installed");
+    }
+
+    #[test]
+    fn startup_skips_cleanup_while_the_registry_is_busy() {
+        let staging = tempfile::tempdir().unwrap();
+        let attempt = DownloadAttempt::new(staging.path()).unwrap();
+        let abandoned = attempt.dir.keep();
+        drop(attempt._lease);
+        let registry = File::open(staging.path()).unwrap();
+        registry.lock().unwrap();
+
+        let path = staging.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = tx.send(DownloadAttempt::reap_abandoned(&path));
+        });
+        let skipped = rx.recv_timeout(std::time::Duration::from_secs(2));
+        let kept_archive = abandoned.exists();
+        drop(registry);
+        worker.join().unwrap();
+        skipped.unwrap().unwrap();
+        assert!(kept_archive);
+        DownloadAttempt::reap_abandoned(staging.path()).unwrap();
+        assert!(!abandoned.exists());
     }
 
     #[test]

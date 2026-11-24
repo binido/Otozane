@@ -83,7 +83,7 @@ pub(crate) fn snapshot_for_update(
             .get("Program")
             .is_some_and(|program| !correct_path(program))
     {
-        return Err("The LaunchAgent does not point to this Otozane app. Turn Start at Login off and back on in Settings, then retry the update.".into());
+        return Err("The LaunchAgent does not point to this Otozane app. In this copy of Otozane, turn Start with session off and back on under Settings → Background, then retry the update.".into());
     }
     Ok(Some(snapshot.to_owned()))
 }
@@ -96,6 +96,7 @@ pub fn autostart_enabled() -> bool {
 /// Installs or removes the agent. `start_now` also loads it, which starts the
 /// service. Pass false while another instance is running.
 pub fn set_autostart(on: bool, start_now: bool) -> io::Result<()> {
+    let _installation_lock = crate::update::installation_lock()?;
     let path = plist_path()?;
     // Unloading an agent that is not loaded fails, that is fine.
     let _ = launchctl(&["bootout", &format!("{}/{LABEL}", domain())]);
