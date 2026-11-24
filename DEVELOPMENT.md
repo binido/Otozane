@@ -47,6 +47,69 @@ stopped. A single `pw-record` should continue to record silence until processing
 resumes. On macOS use one `ffmpeg -f avfoundation -i ":Otozane Microphone"`
 recording through an IPC shutdown and a new service launch.
 
+## macOS app updates
+
+The macOS side of the in-app updater lives in
+`crates/otozane-ui/src/update_macos.rs`. The generic updater downloads the
+release asset and checks it against `SHA256SUMS`; this module trusts that
+result and handles only the app bundle:
+
+- `detect()` finds the running `Otozane.app` and its version. It fails with a
+  message for the Updates section when Otozane runs outside a bundle, from
+  Gatekeeper's App Translocation copy, or from a folder this user cannot write.
+- `asset_name(version)` returns `otozane-vX.Y.Z-macos-arm64.dmg` and refuses
+  Intel Macs.
+- `stage(dmg, bundle, version)` mounts the DMG read-only, requires exactly one
+  `.app`, checks the bundle id, version, Apple Silicon executable and code
+  signature, and copies it to the updates folder. The installed app is not
+  touched. It must be a newer version.
+- `Staged::restart()` writes a shell helper and starts it. The caller sends
+  `Request::Shutdown` and closes the window. The helper waits up to a minute
+  for the process to exit, moves the old bundle to `Otozane-backup-<pid>.app`,
+  moves the staged app in, restores the old app if a step fails, starts
+  `otozaned` again (through the launchd agent when its plist exists, otherwise
+  detached) and opens the new app.
+- `driver_state()` compares the virtual microphone driver in the bundle with
+  the installed one. `needs_reinstall` tells Settings → Virtual microphone to
+  offer a reinstall after the update.
+
+Staging, backup and `last-update.log` are under
+`~/Library/Application Support/Otozane/updates` (with `XDG_CONFIG_HOME`,
+below `$XDG_CONFIG_HOME/otozane/updates`). A failed update leaves the staged
+copy removed and the installed app as it was. Nothing in this module runs
+against the real app in tests: `cargo test -p otozane-ui update_macos` builds a
+signed fixture app and DMG in a temporary folder.
+
+The app is signed ad-hoc and not notarized. Gatekeeper cannot assess that
+signature, so after the checksum, bundle id, version and signature checks the
+staged app gets `xattr -dr com.apple.quarantine`. Without it a downloaded
+update would not open. Trust in the update therefore rests on the HTTPS
+download and the release's `SHA256SUMS`, not on the signature.
+
+### Clean Mac checklist
+
+Automatic tests cover the bundle checks and the swap/rollback helper. These
+need a real machine before the update can be called working:
+
+- Update from the previous release to a test release with Otozane in
+  `/Applications`, as an admin user and as a non-admin user. The app opens
+  again, shows the new version, `otozaned` is running and Otozane Microphone
+  records.
+- Start from a freshly downloaded DMG on a Mac that has never run Otozane.
+  The updated app launches without the right-click → Open step.
+- Install the driver from the old release, update to a release with a changed
+  driver, and check that Settings → Virtual microphone offers a reinstall and
+  that the microphone works afterwards.
+- Try a corrupt or wrong-version DMG: the installed app stays untouched and the
+  error is shown. Kill the helper before it swaps (or make `open` fail) and
+  confirm the old app is restored.
+- Open Otozane from `Downloads` (App Translocation) and from a read-only
+  folder: no Update button, only the release-page link.
+- With login start on, check that the launchd agent starts the service from
+  the new bundle. With it off, the new app still opens and Start service works.
+- Quit Otozane during the helper's wait: nothing changes; the next check
+  starts cleanly.
+
 ## Scripts
 
 | Script | Purpose |

@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const LABEL: &str = "io.github.binido.otozane";
+pub(crate) const LABEL: &str = "io.github.binido.otozane";
 
 pub(crate) fn plist_path() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is not set"))?;

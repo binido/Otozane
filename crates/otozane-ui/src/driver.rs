@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const INSTALLED: &str = "/Library/Audio/Plug-Ins/HAL/Otozane.driver";
+pub(crate) const INSTALLED: &str = "/Library/Audio/Plug-Ins/HAL/Otozane.driver";
 
 /// Result of the last install or remove, taken by the UI to show a toast.
 static RESULT: Mutex<Option<Result<String, String>>> = Mutex::new(None);
@@ -14,7 +14,7 @@ pub fn installed() -> bool {
 }
 
 /// The driver shipped in the app bundle, next to the binaries in Contents/Resources.
-fn bundled() -> Option<PathBuf> {
+pub(crate) fn bundled() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.join("../Resources/Otozane.driver")).filter(|p| p.exists())
 }
@@ -72,7 +72,7 @@ fn run(cmd: String, done: &'static str) {
     });
 }
 
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

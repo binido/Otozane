@@ -21,6 +21,8 @@ mod tray;
 mod update;
 #[cfg(target_os = "linux")]
 mod update_linux;
+#[cfg(target_os = "macos")]
+mod update_macos;
 mod update_release;
 mod widgets;
 
