@@ -1,7 +1,7 @@
 use crate::client::{self, Connection, ServiceClient};
 use crate::theme::{self, ThemeChoice};
 use crate::widgets::{self, card, icon, icon_text, row, section};
-use crate::{chrome, effects, icons};
+use crate::{about, chrome, effects, icons};
 use egui::{Frame, Margin, RichText, Ui};
 use otozane_core::config::EffectConfig;
 use otozane_core::protocol::{CaptureState, Request, Status};
@@ -1007,6 +1007,13 @@ impl App {
                 });
             }
         });
+        if let Err(e) = about::section(ui) {
+            self.toasts.push((
+                format!("Could not open the Otozane repository: {e}"),
+                Instant::now(),
+                true,
+            ));
+        }
         let Some(st) = self.status.clone() else {
             return;
         };
