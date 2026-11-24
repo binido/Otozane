@@ -53,15 +53,32 @@ impl UiSettings {
             .and_then(|s| toml::from_str(&s).ok())
             .unwrap_or_default()
     }
-    fn save(&self) {
+    fn modify(edit: impl FnOnce(&mut Self)) {
+        use std::io::Write;
+
         let path = ui_settings_path();
-        let result = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|_| std::fs::write(&path, toml::to_string(self).unwrap_or_default()));
+        let result = (|| -> std::io::Result<()> {
+            let dir = otozane_core::config::config_dir();
+            std::fs::create_dir_all(&dir)?;
+            let lock = std::fs::File::create(dir.join("ui.lock"))?;
+            lock.lock()?;
+            let mut settings = Self::load();
+            edit(&mut settings);
+            let text = toml::to_string(&settings).map_err(std::io::Error::other)?;
+            let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+            temp.write_all(text.as_bytes())?;
+            temp.persist(&path)?;
+            Ok(())
+        })();
         if let Err(e) = result {
             eprintln!("failed to save {}: {e}", path.display());
         }
+    }
+
+    pub fn record_check(time: i64) {
+        Self::modify(|settings| {
+            settings.updates.last_check = settings.updates.last_check.max(Some(time));
+        });
     }
 }
 
@@ -220,8 +237,7 @@ impl App {
         }
     }
 
-    /// Reads the update thread, announces a new release once and mirrors the
-    /// persisted check time. Automatic checks run on the update thread.
+    /// Announces a new release and closes the window after a successful handoff.
     fn poll_updates(&mut self, ctx: &egui::Context) {
         let state = self.updates.snapshot();
         if state.phase == update::Phase::Available
@@ -235,10 +251,6 @@ impl App {
                 false,
             ));
         }
-        if state.last_check != self.settings.updates.last_check {
-            self.settings.updates.last_check = state.last_check;
-            self.settings.save();
-        }
         if matches!(
             state.phase,
             update::Phase::Checking | update::Phase::Staging | update::Phase::Applying
@@ -250,12 +262,12 @@ impl App {
             ctx.request_repaint();
         }
         if state.phase == update::Phase::Restarting && !self.restarting {
-            // The new version is installed. Save, stop the old service and let
-            // Drop run the platform handoff once the window is gone.
             self.restarting = true;
-            self.settings.save();
-            client::stop_for_update();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if state.phase == update::Phase::Applying
+            && ctx.input(|i| i.viewport().close_requested())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.update_state = state;
     }
@@ -952,7 +964,7 @@ impl App {
                 ) {
                     self.settings.theme = choice;
                     theme::apply(ui.ctx(), choice);
-                    self.settings.save();
+                    UiSettings::modify(|settings| settings.theme = choice);
                 }
             });
         });
@@ -1146,20 +1158,13 @@ impl App {
         let p = theme::current(ui.ctx());
         let st = self.update_state.clone();
         let phase = st.phase.clone();
-        let busy = matches!(
-            phase,
-            update::Phase::Checking
-                | update::Phase::Staging
-                | update::Phase::Ready
-                | update::Phase::Applying
-                | update::Phase::Restarting
-        );
+        let busy = phase.blocks_check();
         section(ui, "Updates");
         card(ui, |ui| {
             let status = if phase == update::Phase::Checking {
                 "Checking for updates...".to_string()
             } else {
-                last_checked(self.settings.updates.last_check)
+                last_checked(st.last_check)
             };
             row(
                 ui,
@@ -1269,22 +1274,27 @@ impl App {
                     .clicked()
                 {
                     self.confirm_restart = false;
-                    self.updates.stage();
+                    self.updates.stage(release);
                 }
             }
             update::Phase::Staging => self.working(ui, "Downloading and checking the file..."),
             update::Phase::Applying => self.working(ui, "Installing..."),
             update::Phase::Restarting => self.working(ui, "Restarting Otozane..."),
             update::Phase::Ready if !self.confirm_restart => {
-                if ui
-                    .add(widgets::primary(
-                        ui,
-                        icon_text(icons::REFRESH_CW, "Restart and update"),
-                    ))
-                    .clicked()
-                {
-                    self.confirm_restart = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(widgets::primary(
+                            ui,
+                            icon_text(icons::REFRESH_CW, "Restart and update"),
+                        ))
+                        .clicked()
+                    {
+                        self.confirm_restart = true;
+                    }
+                    if widgets::link(ui, "Discard download").clicked() {
+                        self.updates.discard();
+                    }
+                });
             }
             update::Phase::Ready => {
                 let hint = if self.processing_now() {
@@ -1310,10 +1320,16 @@ impl App {
                     }
                 });
             }
+            update::Phase::RestartFailed(message) => {
+                self.error_row(ui, &p, message);
+                if ui.add(widgets::tonal(ui, "Retry restart")).clicked() {
+                    self.updates.retry_restart();
+                }
+            }
             update::Phase::Failed(message) => {
                 self.error_row(ui, &p, message);
                 if ui.add(widgets::tonal(ui, "Try again")).clicked() {
-                    self.updates.stage();
+                    self.updates.stage(release);
                 }
             }
             _ => {}
@@ -1360,8 +1376,13 @@ impl App {
     }
 
     fn save_update_prefs(&mut self) {
-        self.settings.save();
-        self.updates.set_prefs(self.settings.updates.clone());
+        let prefs = &self.settings.updates;
+        UiSettings::modify(|settings| {
+            settings.updates.check_automatically = prefs.check_automatically;
+            settings.updates.interval = prefs.interval;
+        });
+        self.updates
+            .set_schedule(prefs.check_automatically, prefs.interval);
     }
 
     fn processing_now(&self) -> bool {
@@ -1433,9 +1454,15 @@ fn device_label(st: &Status, name: Option<&str>) -> String {
 }
 
 impl eframe::App for App {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_updates(ctx);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.sync();
-        self.poll_updates(ui.ctx());
+        if self.update_state.phase.is_handoff() {
+            ui.disable();
+        }
         #[cfg(target_os = "macos")]
         if let Some(r) = crate::driver::take_result() {
             let (msg, is_error) = match r {
@@ -1451,7 +1478,7 @@ impl eframe::App for App {
                 ui.ctx(),
                 self.status.as_ref(),
                 self.setting_stop_on_close.unwrap_or(self.stop_on_close),
-                self.restarting,
+                self.update_state.phase.is_handoff(),
             );
         }
         dev_screenshot(ui);
@@ -1551,19 +1578,8 @@ impl eframe::App for App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // A check may have run while the window was hidden; keep its time.
-        let state = self.updates.snapshot();
-        if state.last_check != self.settings.updates.last_check {
-            self.settings.updates.last_check = state.last_check;
-            self.settings.save();
-        }
-        self.client.close();
-        // The service is stopped and the window is gone: replace the app now.
-        // On success this process is relaunched or a helper waits for it.
-        if self.restarting
-            && let Err(e) = self.updates.restart()
-        {
-            eprintln!("update: could not start the new version: {e}");
+        if !self.updates.snapshot().phase.is_handoff() {
+            self.client.close();
         }
     }
 }

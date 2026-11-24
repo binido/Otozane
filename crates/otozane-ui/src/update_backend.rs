@@ -1,11 +1,3 @@
-//! The update backend behind Settings, Updates: GitHub releases, verified
-//! staging and the installer that matches this installation.
-//!
-//! `update.rs` owns the worker thread and the UI state. This module runs on
-//! that thread and owns the requests and the files they leave. `apply` installs
-//! and `restart` performs the handoff after the UI has stopped the service and
-//! closed its window.
-
 use crate::update::{self, Action, Backend, Release};
 use crate::update_release::{self, HttpTransport, Response, Transport, UpdateError};
 use std::path::{Path, PathBuf};
@@ -96,10 +88,12 @@ impl<T: Transport> Github<T> {
             found.release.tag_name
         );
         let notes = found.release.notes().to_string();
+        let id = found.release.id;
         self.release = Some(found.release);
         self.version = Some(version.clone());
         self.asset = asset;
         Ok(Some(Release {
+            id,
             version,
             notes,
             page_url,
@@ -117,12 +111,22 @@ impl<T: Transport + Send + 'static> Backend for Github<T> {
         let (Some(raw), Some(asset)) = (self.release.as_ref(), self.asset.as_ref()) else {
             return Err("Check for updates again before downloading.".into());
         };
-        if self.version.as_deref() != Some(release.version.as_str()) {
+        if raw.id != release.id || self.version.as_deref() != Some(release.version.as_str()) {
             return Err("Check for updates again before downloading.".into());
         }
-        let path = update_release::download_verified(&self.transport, raw, asset, &self.staging)
+        self.platform.discard();
+        std::fs::create_dir_all(&self.staging).map_err(|e| stage_message(UpdateError::Io(e)))?;
+        let archive = tempfile::Builder::new()
+            .prefix("download-")
+            .tempdir_in(&self.staging)
+            .map_err(|e| stage_message(UpdateError::Io(e)))?;
+        let path = update_release::download_verified(&self.transport, raw, asset, archive.path())
             .map_err(stage_message)?;
-        self.platform.stage(&path, &release.version)
+        self.platform.stage(path, &release.version, archive)
+    }
+
+    fn discard(&mut self) {
+        self.platform.discard();
     }
 
     fn apply(&mut self) -> Result<(), String> {
@@ -193,6 +197,10 @@ mod platform {
 
         pub fn reset(&mut self) {
             self.bundle = None;
+            self.discard();
+        }
+
+        pub fn discard(&mut self) {
             self.staged = None;
         }
 
@@ -216,12 +224,17 @@ mod platform {
             (Action::Update, Some(asset))
         }
 
-        pub fn stage(&mut self, dmg: &Path, version: &str) -> Result<(), String> {
+        pub fn stage(
+            &mut self,
+            dmg: PathBuf,
+            version: &str,
+            _archive: tempfile::TempDir,
+        ) -> Result<(), String> {
             let bundle = self.bundle.as_ref().ok_or_else(|| {
                 "Otozane cannot update itself from here. Download the latest release instead."
                     .to_string()
             })?;
-            self.staged = Some(update_macos::stage(dmg, bundle, version)?);
+            self.staged = Some(update_macos::stage(&dmg, bundle, version)?);
             Ok(())
         }
 
@@ -235,7 +248,7 @@ mod platform {
         pub fn restart(&mut self) -> Result<(), String> {
             let staged = self
                 .staged
-                .take()
+                .as_mut()
                 .ok_or_else(|| "There is no prepared update to restart into.".to_string())?;
             staged.restart()
         }
@@ -259,8 +272,8 @@ mod platform {
     /// How this copy was installed, the verified download and the restart plan.
     pub struct Platform {
         install: Option<Install>,
-        staged: Option<PathBuf>,
-        restart: Option<update_linux::Restart>,
+        staged: Option<(PathBuf, tempfile::TempDir)>,
+        restart: Option<(update_linux::Restart, std::fs::File)>,
     }
 
     impl Platform {
@@ -274,8 +287,12 @@ mod platform {
 
         pub fn reset(&mut self) {
             self.install = None;
-            self.staged = None;
+            self.discard();
             self.restart = None;
+        }
+
+        pub fn discard(&mut self) {
+            self.staged = None;
         }
 
         pub fn select(
@@ -297,8 +314,13 @@ mod platform {
             }
         }
 
-        pub fn stage(&mut self, asset: &Path, _version: &str) -> Result<(), String> {
-            self.staged = Some(asset.to_path_buf());
+        pub fn stage(
+            &mut self,
+            asset: PathBuf,
+            _version: &str,
+            archive: tempfile::TempDir,
+        ) -> Result<(), String> {
+            self.staged = Some((asset, archive));
             Ok(())
         }
 
@@ -307,33 +329,34 @@ mod platform {
                 .install
                 .as_ref()
                 .ok_or_else(|| "This installation cannot be updated from the app.".to_string())?;
-            let staged = self
+            let (staged, _) = self
                 .staged
                 .as_ref()
                 .ok_or_else(|| "The update is not downloaded yet.".to_string())?;
-            self.restart = Some(
-                update_linux::install(install, version, staged).map_err(|e| {
-                    format!(
-                        "The update could not be installed: {e} The installed version is unchanged."
-                    )
-                })?,
-            );
+            let lock = update::installation_lock()?;
+            let plan = update_linux::Restart::current().map_err(|e| e.to_string())?;
+            let was_running = crate::client::service_is_running()
+                .map_err(|e| format!("Could not check the audio service status: {e}"))?;
+            let install_update = || {
+                plan.stop()
+                    .map_err(|e| format!("Could not stop the audio service: {e}"))?;
+                update_linux::install(install, version, staged)
+                    .map_err(|e| format!("The update could not be installed: {e}"))
+            };
+            let result = install_update();
+            self.discard();
+            result.map_err(|e| crate::client::restore_after_update_error(was_running, e))?;
+            self.restart = Some((plan, lock));
             Ok(())
         }
 
         pub fn restart(&mut self) -> Result<(), String> {
-            let plan = self
+            let (plan, _) = self
                 .restart
                 .as_ref()
                 .ok_or_else(|| "There is no installed update to restart into.".to_string())?;
-            // Without a user unit nothing else starts the service for the new
-            // app, and its window does not start one when stop-on-close is off.
-            if plan.service == update_linux::Service::Detached
-                && let Err(e) = crate::client::start_service()
-            {
-                return Err(format!("Otozane could not start the updated service: {e}"));
-            }
-            update_linux::restart(plan).map_err(|e| e.to_string())
+            update_linux::restart(plan)
+                .map_err(|e| format!("The update is installed. Could not restart Otozane: {e}"))
         }
     }
 
@@ -424,6 +447,7 @@ mod tests {
 
     fn release() -> Release {
         Release {
+            id: 0,
             version: "0.6.0".into(),
             notes: String::new(),
             page_url: String::new(),
@@ -508,6 +532,23 @@ mod tests {
         assert!(error.contains("SHA256SUMS"), "{error}");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         assert!(backend.apply().is_err(), "nothing was installed");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn separate_attempts_own_and_clean_up_their_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = checked(Fixture::new(), dir.path());
+        let mut second = checked(Fixture::new(), dir.path());
+
+        first.stage(&release()).unwrap();
+        second.stage(&release()).unwrap();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+
+        first.discard();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        drop(second);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

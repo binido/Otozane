@@ -215,10 +215,21 @@ pub struct Client {
     writer: std::os::unix::net::UnixStream,
 }
 
+#[cfg(target_os = "linux")]
+impl std::os::fd::AsFd for Client {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.writer.as_fd()
+    }
+}
+
 #[cfg(unix)]
 impl Client {
     pub fn connect() -> std::io::Result<Self> {
-        let stream = std::os::unix::net::UnixStream::connect(socket_path())?;
+        Self::connect_to(&socket_path())
+    }
+
+    pub fn connect_to(path: &std::path::Path) -> std::io::Result<Self> {
+        let stream = std::os::unix::net::UnixStream::connect(path)?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
         Ok(Self {
             reader: std::io::BufReader::new(stream.try_clone()?),

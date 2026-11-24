@@ -1,14 +1,3 @@
-//! Update checks and installation, off the UI thread.
-//!
-//! The UI only queues commands and reads the latest published state, so a
-//! network request, a checksum check or a package manager prompt never blocks
-//! a frame. The real GitHub release and platform installer code implements
-//! [`Backend`] in its own module. [`platform_backend`] is the single place this
-//! build selects one. The UI never restarts the app on its own: a check only
-//! finds a release, staging only downloads and verifies it, applying installs
-//! it after the user confirms, and the restart runs once the service is
-//! stopped and the window is gone.
-
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -87,12 +76,10 @@ pub struct Prefs {
 impl Prefs {
     /// Whether an automatic check is due. A clock that jumped backwards does
     /// not force a check.
-    pub fn due(&self, now: i64) -> bool {
+    pub fn due(&self, now: i64, last_check: Option<i64>) -> bool {
         let interval = self.interval.duration().as_secs() as i64;
         self.check_automatically
-            && self
-                .last_check
-                .is_none_or(|last| now.saturating_sub(last) >= interval)
+            && last_check.is_none_or(|last| now.saturating_sub(last) >= interval)
     }
 }
 
@@ -109,6 +96,7 @@ pub enum Action {
 /// A release newer than this build.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Release {
+    pub id: u64,
     /// Version without the leading `v`, e.g. `0.6.0`.
     pub version: String,
     /// Release notes, generated from `CHANGELOG.md`.
@@ -118,11 +106,7 @@ pub struct Release {
     pub action: Action,
 }
 
-/// Installs Otozane updates. Implemented by the release and platform backends.
-/// Every method runs on the update thread and may block.
-///
-/// An error is a sentence for the user that says what to do next. Nothing may
-/// be left half-installed: a failed stage or apply keeps the running version.
+/// Update operations run by the worker.
 pub trait Backend: Send + 'static {
     fn current_version(&self) -> String {
         app_version().to_string()
@@ -138,8 +122,9 @@ pub trait Backend: Send + 'static {
     /// restart. The app keeps running: [`Backend::restart`] does the handoff.
     fn apply(&mut self) -> Result<(), String>;
 
-    /// Starts the replacement after the UI stopped the service and closed its
-    /// window. Runs once on the UI thread, which then exits (or is replaced).
+    fn discard(&mut self);
+
+    /// Starts the replacement or arranges for it to start after this process exits.
     fn restart(&mut self) -> Result<(), String>;
 }
 
@@ -157,8 +142,8 @@ pub enum Phase {
     /// Staged and verified, waiting for the user to confirm the restart.
     Ready,
     Applying,
-    /// Applied. The backend is restarting the app.
     Restarting,
+    RestartFailed(String),
     /// An actionable message for the Updates section.
     Failed(String),
 }
@@ -192,9 +177,12 @@ impl State {
 
 enum Command {
     Check,
-    SetPrefs(Prefs),
-    Stage,
+    SetSchedule(bool, Interval),
+    Stage { id: u64, version: String },
+    Discard,
     Apply,
+    RetryRestart,
+    Exit(Sender<()>),
 }
 
 /// Handle to the update thread.
@@ -202,25 +190,26 @@ enum Command {
 pub struct Updater {
     tx: Sender<Command>,
     state: Arc<Mutex<State>>,
-    backend: Arc<Mutex<Box<dyn Backend>>>,
 }
 
 impl Updater {
-    pub fn spawn(backend: Box<dyn Backend>, prefs: Prefs) -> Self {
+    pub fn spawn(
+        backend: Box<dyn Backend>,
+        prefs: Prefs,
+        persist_check: impl Fn(i64) + Send + 'static,
+    ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let state = Arc::new(Mutex::new(State {
             current_version: backend.current_version(),
             last_check: prefs.last_check,
             ..Default::default()
         }));
-        let backend = Arc::new(Mutex::new(backend));
-        let worker = backend.clone();
         let st = state.clone();
         std::thread::Builder::new()
             .name("otozane-updates".into())
-            .spawn(move || run(worker, prefs, rx, st))
+            .spawn(move || run(backend, prefs, rx, st, persist_check))
             .expect("failed to spawn update thread");
-        Self { tx, state, backend }
+        Self { tx, state }
     }
 
     pub fn snapshot(&self) -> State {
@@ -232,90 +221,141 @@ impl Updater {
         let _ = self.tx.send(Command::Check);
     }
 
-    /// Downloads and verifies the release found by the last check.
-    pub fn stage(&self) {
-        let _ = self.tx.send(Command::Stage);
+    pub fn stage(&self, release: &Release) {
+        let _ = self.tx.send(Command::Stage {
+            id: release.id,
+            version: release.version.clone(),
+        });
     }
 
-    /// Installs the staged release. Confirmation is the UI's job.
+    pub fn discard(&self) {
+        let _ = self.tx.send(Command::Discard);
+    }
+
     pub fn apply(&self) {
-        let _ = self.tx.send(Command::Apply);
+        let mut state = self.state.lock().unwrap();
+        if state.phase == Phase::Ready && self.tx.send(Command::Apply).is_ok() {
+            state.phase = Phase::Applying;
+        }
     }
 
-    /// Runs the platform restart. The UI calls it once it has stopped the
-    /// service and closed its window; this process ends or is replaced.
-    pub fn restart(&self) -> Result<(), String> {
-        let mut backend = self
-            .backend
-            .lock()
-            .map_err(|_| "The update thread stopped.".to_string())?;
-        backend.restart()
+    pub fn retry_restart(&self) {
+        let mut state = self.state.lock().unwrap();
+        if matches!(state.phase, Phase::RestartFailed(_))
+            && self.tx.send(Command::RetryRestart).is_ok()
+        {
+            state.phase = Phase::Applying;
+        }
     }
 
-    pub fn set_prefs(&self, prefs: Prefs) {
-        let _ = self.tx.send(Command::SetPrefs(prefs));
+    pub fn set_schedule(&self, enabled: bool, interval: Interval) {
+        let _ = self.tx.send(Command::SetSchedule(enabled, interval));
+    }
+
+    pub fn finish(&self) {
+        let (done, finished) = std::sync::mpsc::channel();
+        if self.tx.send(Command::Exit(done)).is_ok() {
+            let _ = finished.recv_timeout(Duration::from_millis(250));
+        }
     }
 }
 
-/// How often the update thread re-reads the clock while idle. Intervals are at
-/// least six hours, so a minute is fine and keeps the thread quiet.
 const IDLE_POLL: Duration = Duration::from_secs(60);
 
 fn run(
-    backend: Arc<Mutex<Box<dyn Backend>>>,
+    mut backend: Box<dyn Backend>,
     mut prefs: Prefs,
     rx: Receiver<Command>,
     state: Arc<Mutex<State>>,
+    persist_check: impl Fn(i64),
 ) {
-    if prefs.due(now()) {
-        check(&mut **backend.lock().unwrap(), &state);
-    }
+    let auto_check = |backend: &mut dyn Backend, prefs: &Prefs| {
+        let last_check = state.lock().unwrap().last_check;
+        if !busy(&state) && prefs.due(now(), last_check) {
+            check(backend, &state, &persist_check);
+        }
+    };
+    auto_check(&mut *backend, &prefs);
     loop {
         match rx.recv_timeout(IDLE_POLL) {
-            Ok(Command::Check) => {
-                if !busy(&state) {
-                    check(&mut **backend.lock().unwrap(), &state);
-                }
+            Ok(Command::Check) if !busy(&state) => {
+                check(&mut *backend, &state, &persist_check);
             }
-            Ok(Command::SetPrefs(p)) => prefs = p,
-            Ok(Command::Stage) => {
+            Ok(Command::SetSchedule(enabled, interval)) => {
+                prefs.check_automatically = enabled;
+                prefs.interval = interval;
+            }
+            Ok(Command::Stage { id, version }) if !busy(&state) => {
                 let release = state.lock().unwrap().release.clone();
                 if let Some(release) = release
+                    && release.id == id
+                    && release.version == version
                     && release.action == Action::Update
-                    && !busy(&state)
                 {
-                    stage(&mut **backend.lock().unwrap(), &state, &release);
+                    stage(&mut *backend, &state, &release);
+                }
+            }
+            Ok(Command::Discard) => {
+                let mut state = state.lock().unwrap();
+                if state.phase == Phase::Ready {
+                    backend.discard();
+                    state.phase = Phase::Available;
                 }
             }
             Ok(Command::Apply) => {
-                let ready = state.lock().unwrap().phase == Phase::Ready;
-                if ready {
-                    apply(&mut **backend.lock().unwrap(), &state);
+                if let Err(e) = backend.apply() {
+                    publish(&state, Phase::Failed(e));
+                } else {
+                    restart(&mut *backend, &state);
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Command::RetryRestart) => restart(&mut *backend, &state),
+            Ok(Command::Exit(done)) => {
+                drop(backend);
+                let _ = done.send(());
+                return;
+            }
             Err(RecvTimeoutError::Disconnected) => return,
+            Ok(_) | Err(RecvTimeoutError::Timeout) => {}
         }
-        if !busy(&state) && prefs.due(now()) {
-            check(&mut **backend.lock().unwrap(), &state);
-        }
+        auto_check(&mut *backend, &prefs);
+    }
+}
+
+impl Phase {
+    pub fn blocks_check(&self) -> bool {
+        matches!(
+            self,
+            Self::Checking
+                | Self::Staging
+                | Self::Ready
+                | Self::Applying
+                | Self::Restarting
+                | Self::RestartFailed(_)
+        )
+    }
+
+    pub fn is_handoff(&self) -> bool {
+        matches!(self, Self::Applying | Self::Restarting)
     }
 }
 
 fn busy(state: &Mutex<State>) -> bool {
-    matches!(
-        state.lock().unwrap().phase,
-        Phase::Checking | Phase::Staging | Phase::Ready | Phase::Applying | Phase::Restarting
-    )
+    state.lock().unwrap().phase.blocks_check()
 }
 
 fn publish(state: &Mutex<State>, phase: Phase) {
     state.lock().unwrap().phase = phase;
 }
 
-fn check(backend: &mut dyn Backend, state: &Mutex<State>) {
-    state.lock().unwrap().last_check = Some(now());
-    publish(state, Phase::Checking);
+fn check(backend: &mut dyn Backend, state: &Mutex<State>, persist_check: &impl Fn(i64)) {
+    let checked_at = now();
+    {
+        let mut state = state.lock().unwrap();
+        state.last_check = Some(checked_at);
+        state.phase = Phase::Checking;
+    }
+    persist_check(checked_at);
     let result = backend.check();
     let mut s = state.lock().unwrap();
     match result {
@@ -345,15 +385,22 @@ fn stage(backend: &mut dyn Backend, state: &Mutex<State>, release: &Release) {
     );
 }
 
-fn apply(backend: &mut dyn Backend, state: &Mutex<State>) {
-    publish(state, Phase::Applying);
+fn restart(backend: &mut dyn Backend, state: &Mutex<State>) {
     publish(
         state,
-        match backend.apply() {
+        match backend.restart() {
             Ok(()) => Phase::Restarting,
-            Err(e) => Phase::Failed(e),
+            Err(e) => Phase::RestartFailed(e),
         },
     );
+}
+
+pub(crate) fn installation_lock() -> Result<std::fs::File, String> {
+    let lock = std::fs::File::create(staging_dir().join("install.lock"))
+        .map_err(|e| format!("Could not open the update lock: {e}"))?;
+    lock.try_lock()
+        .map_err(|e| format!("Could not lock the installation for an update: {e}"))?;
+    Ok(lock)
 }
 
 /// Opens the release page in the system browser. Only web addresses from the
@@ -402,6 +449,7 @@ mod tests {
 
     fn release() -> Release {
         Release {
+            id: 1,
             version: "0.6.0".into(),
             notes: "What changed.".into(),
             page_url: "https://github.com/binido/Otozane/releases/tag/v0.6.0".into(),
@@ -412,6 +460,7 @@ mod tests {
     struct FakeBackend {
         check: Result<Option<Release>, String>,
         stage_error: Option<String>,
+        restart_error: Option<String>,
         staged: Arc<AtomicBool>,
         applied: Arc<AtomicBool>,
         restarted: Arc<AtomicBool>,
@@ -428,6 +477,7 @@ mod tests {
                 Self {
                     check,
                     stage_error: None,
+                    restart_error: None,
                     staged: staged.clone(),
                     applied: applied.clone(),
                     restarted: restarted.clone(),
@@ -453,11 +503,20 @@ mod tests {
         }
 
         fn apply(&mut self) -> Result<(), String> {
-            self.applied.store(true, Ordering::SeqCst);
+            if self.applied.swap(true, Ordering::SeqCst) {
+                return Err("The update was already installed.".into());
+            }
             Ok(())
         }
 
+        fn discard(&mut self) {
+            self.staged.store(false, Ordering::SeqCst);
+        }
+
         fn restart(&mut self) -> Result<(), String> {
+            if let Some(error) = self.restart_error.take() {
+                return Err(error);
+            }
             if !self.applied.load(Ordering::SeqCst) {
                 return Err("The update was not installed.".into());
             }
@@ -486,26 +545,29 @@ mod tests {
             interval: Interval::OneDay,
             last_check: None,
         };
-        assert!(prefs.due(0), "never checked");
+        assert!(prefs.due(0, prefs.last_check), "never checked");
         prefs.last_check = Some(1_000_000);
-        assert!(!prefs.due(1_000_000 + 86_399));
-        assert!(prefs.due(1_000_000 + 86_400));
-        assert!(!prefs.due(999_990), "a clock that went backwards waits");
+        assert!(!prefs.due(1_000_000 + 86_399, prefs.last_check));
+        assert!(prefs.due(1_000_000 + 86_400, prefs.last_check));
+        assert!(
+            !prefs.due(999_990, prefs.last_check),
+            "a clock that went backwards waits"
+        );
         prefs.check_automatically = false;
         prefs.last_check = None;
-        assert!(!prefs.due(0), "off means never due");
+        assert!(!prefs.due(0, prefs.last_check), "off means never due");
     }
 
     #[test]
     fn worker_checks_stages_and_applies() {
         let (fake, staged, applied, _) = FakeBackend::new(Ok(Some(release())));
-        let updater = Updater::spawn(Box::new(fake), Prefs::default());
+        let updater = Updater::spawn(Box::new(fake), Prefs::default(), |_| {});
         updater.check();
         let state = wait(&updater, |s| s.phase == Phase::Available);
         assert_eq!(state.release.unwrap().version, "0.6.0");
         assert!(state.last_check.is_some());
 
-        updater.stage();
+        updater.stage(&release());
         wait(&updater, |s| s.phase == Phase::Ready);
         assert!(staged.load(Ordering::SeqCst));
 
@@ -515,16 +577,30 @@ mod tests {
     }
 
     #[test]
-    fn worker_runs_a_due_automatic_check_at_start() {
+    fn worker_persists_and_schedules_from_the_last_attempt_without_a_window() {
         let (fake, _, _, _) = FakeBackend::new(Ok(None));
         let prefs = Prefs {
             check_automatically: true,
             interval: Interval::SixHours,
-            last_check: None,
+            last_check: Some(now() - 7 * 3600),
         };
-        let updater = Updater::spawn(Box::new(fake), prefs);
-        wait(&updater, |s| s.phase == Phase::UpToDate);
-        assert!(!updater.snapshot().has_update());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let updater = Updater::spawn(Box::new(fake), prefs, move |time| tx.send(time).unwrap());
+        let start_time = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let state = wait(&updater, |s| s.phase == Phase::UpToDate);
+        assert_eq!(state.last_check, Some(start_time));
+
+        updater.set_schedule(true, Interval::TwelveHours);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout)
+        );
+        updater.check();
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout)
+        );
     }
 
     #[test]
@@ -535,7 +611,7 @@ mod tests {
             interval: Interval::OneWeek,
             last_check: Some(now()),
         };
-        let updater = Updater::spawn(Box::new(fake), prefs);
+        let updater = Updater::spawn(Box::new(fake), prefs, |_| {});
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(updater.snapshot().phase, Phase::Idle);
     }
@@ -544,7 +620,7 @@ mod tests {
     fn check_error_is_actionable_and_keeps_the_version() {
         let message = "Could not reach GitHub. Check your connection and try again.";
         let (fake, _, _, _) = FakeBackend::new(Err(message.into()));
-        let updater = Updater::spawn(Box::new(fake), Prefs::default());
+        let updater = Updater::spawn(Box::new(fake), Prefs::default(), |_| {});
         updater.check();
         let state = wait(&updater, |s| matches!(s.phase, Phase::Failed(_)));
         assert_eq!(state.phase, Phase::Failed(message.into()));
@@ -556,42 +632,62 @@ mod tests {
     fn stage_error_keeps_the_release_for_a_retry() {
         let (mut fake, staged, _, _) = FakeBackend::new(Ok(Some(release())));
         fake.stage_error = Some("Checksum mismatch. The download was removed, try again.".into());
-        let updater = Updater::spawn(Box::new(fake), Prefs::default());
+        let updater = Updater::spawn(Box::new(fake), Prefs::default(), |_| {});
         updater.check();
         wait(&updater, |s| s.phase == Phase::Available);
-        updater.stage();
+        updater.stage(&release());
         let state = wait(&updater, |s| matches!(s.phase, Phase::Failed(_)));
         assert!(state.release.is_some(), "retry needs the release");
         assert!(!staged.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn apply_waits_for_staging_and_the_ui_handoff() {
-        let (fake, _, applied, restarted) = FakeBackend::new(Ok(Some(release())));
-        let updater = Updater::spawn(Box::new(fake), Prefs::default());
-
-        // Applying before a release was staged must not install anything.
-        updater.apply();
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(!applied.load(Ordering::SeqCst));
-
+    fn only_the_selected_release_is_staged_and_discard_allows_new_checks() {
+        let (fake, staged, applied, restarted) = FakeBackend::new(Ok(Some(release())));
+        let updater = Updater::spawn(Box::new(fake), Prefs::default(), |_| {});
         updater.check();
         wait(&updater, |s| s.phase == Phase::Available);
+        let mut stale = release();
+        stale.id += 1;
+        updater.stage(&stale);
         updater.apply();
+        updater.check();
         std::thread::sleep(Duration::from_millis(50));
-        assert!(!applied.load(Ordering::SeqCst), "the file was not staged");
+        assert!(!staged.load(Ordering::SeqCst));
+        assert!(!applied.load(Ordering::SeqCst));
 
-        updater.stage();
+        updater.stage(&release());
+        wait(&updater, |s| s.phase == Phase::Ready);
+        updater.discard();
+        wait(&updater, |s| s.phase == Phase::Available);
+        assert!(!staged.load(Ordering::SeqCst));
+        updater.stage(&release());
         wait(&updater, |s| s.phase == Phase::Ready);
         updater.apply();
         wait(&updater, |s| s.phase == Phase::Restarting);
         assert!(applied.load(Ordering::SeqCst));
-        // Installing is not restarting: only the UI handoff starts it.
-        assert!(!restarted.load(Ordering::SeqCst));
-
-        updater.restart().unwrap();
         assert!(restarted.load(Ordering::SeqCst));
-        assert!(updater.restart().is_err(), "the handoff runs once");
+    }
+
+    #[test]
+    fn retrying_a_failed_handoff_skips_installation() {
+        let (mut fake, _, _, restarted) = FakeBackend::new(Ok(Some(release())));
+        fake.restart_error = Some("Restart failed".into());
+        let updater = Updater::spawn(Box::new(fake), Prefs::default(), |_| {});
+        updater.check();
+        wait(&updater, |s| s.phase == Phase::Available);
+        updater.stage(&release());
+        wait(&updater, |s| s.phase == Phase::Ready);
+        updater.apply();
+        wait(&updater, |s| {
+            s.phase == Phase::RestartFailed("Restart failed".into())
+        });
+
+        updater.check();
+        updater.stage(&release());
+        updater.retry_restart();
+        wait(&updater, |s| s.phase == Phase::Restarting);
+        assert!(restarted.load(Ordering::SeqCst));
     }
 
     #[test]

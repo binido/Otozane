@@ -367,25 +367,177 @@ fn close_service(timeout: Duration) {
         let _ = client.request(&Request::Shutdown);
         // The next window must see a stopped service when it opens.
         #[cfg(target_os = "macos")]
-        wait_for_service_exit(Duration::from_secs(2));
+        let _ = wait_for_service_exit(
+            &otozane_core::protocol::socket_path(),
+            Duration::from_secs(2),
+        );
     }
 }
 
-/// Stops the service before an update replaces its binaries. The update's
-/// restart starts it again, so this ignores stop-on-close. It waits for the
-/// socket to close: the replaced service must not race the new one.
-pub fn stop_for_update() {
-    if let Ok(mut client) = connect_within(Duration::from_secs(2)) {
-        let _ = client.request(&Request::Shutdown);
-        wait_for_service_exit(Duration::from_secs(2));
+fn update_connection(path: &std::path::Path) -> std::io::Result<Option<Client>> {
+    match Client::connect_to(path) {
+        Ok(client) => Ok(Some(client)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
     }
 }
 
-fn wait_for_service_exit(timeout: Duration) {
+pub fn service_is_running() -> std::io::Result<bool> {
+    let Some(mut client) = update_connection(&otozane_core::protocol::socket_path())? else {
+        return Ok(false);
+    };
+    match client.request(&Request::Status)? {
+        Response::Status(_) => Ok(true),
+        Response::Stopped => Ok(false),
+        response => Err(std::io::Error::other(format!(
+            "Unexpected service status: {response:?}"
+        ))),
+    }
+}
+
+pub fn stop_for_update(
+    stop_supervisor: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    stop_for_update_at(&otozane_core::protocol::socket_path(), stop_supervisor)
+}
+
+fn stop_for_update_at(
+    path: &std::path::Path,
+    stop_supervisor: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let Some(mut client) = update_connection(path)? else {
+        stop_supervisor()?;
+        return wait_for_service_exit(path, Duration::from_secs(2));
+    };
+    #[cfg(target_os = "linux")]
+    let peer = service_pidfd(&client);
+    let response = client.request(&Request::Shutdown)?;
+    if !matches!(response, Response::Ok | Response::Stopped) {
+        return Err(std::io::Error::other(format!(
+            "Service refused shutdown: {response:?}"
+        )));
+    }
+    stop_supervisor()?;
+    let exited = wait_for_service_exit(path, Duration::from_secs(2));
+    #[cfg(target_os = "linux")]
+    if exited
+        .as_ref()
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+        && matches!(client.request(&Request::Status), Ok(Response::Stopped))
+    {
+        // Stop-on-close can leave the daemon holding the socket after saving.
+        terminate_held_service(&peer?)?;
+        return wait_for_service_exit(path, Duration::from_secs(2));
+    }
+    exited
+}
+
+pub fn wait_for_service_start() -> std::io::Result<()> {
+    let mut client = connect_within(Duration::from_secs(4))?;
+    match client.request(&Request::Status)? {
+        Response::Status(_) => Ok(()),
+        response => Err(std::io::Error::other(format!(
+            "The audio service did not start: {response:?}"
+        ))),
+    }
+}
+
+fn wait_for_service_exit(path: &std::path::Path, timeout: Duration) -> std::io::Result<()> {
     let start = Instant::now();
-    while start.elapsed() < timeout && Client::connect().is_ok() {
+    while update_connection(path)?.is_some() {
+        if start.elapsed() >= timeout {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "The audio service did not exit in time",
+            ));
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn service_pidfd(client: &Client) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+
+    let mut peer = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
+    // SAFETY: The socket is live and peer and size are writable with the declared length.
+    let result = unsafe {
+        libc::getsockopt(
+            client.as_fd().as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut peer).cast(),
+            &mut size,
+        )
+    };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    if size as usize != std::mem::size_of_val(&peer) || peer.pid <= 0 || peer.uid != uid {
+        return Err(std::io::Error::other(
+            "The audio service is owned by another user",
+        ));
+    }
+    // SAFETY: pidfd_open takes a positive PID and zero flags.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, peer.pid, 0u32) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: A successful pidfd_open returns a new owned descriptor.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) })
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_held_service(peer: &std::os::fd::OwnedFd) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: The PID descriptor identifies the peer and null requests default signal info.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            peer.as_raw_fd(),
+            libc::SIGTERM,
+            std::ptr::null::<libc::siginfo_t>(),
+            0u32,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+}
+
+pub fn restore_after_update_error(was_running: bool, error: String) -> String {
+    if was_running
+        && !matches!(service_is_running(), Ok(true))
+        && let Err(restore) = start_service().and_then(|()| wait_for_service_start())
+    {
+        return format!(
+            "{error} Could not restore the audio service: {restore}. Use Start service after resolving the error."
+        );
+    }
+    error
 }
 
 pub fn stop_on_close_enabled() -> bool {
@@ -573,7 +725,7 @@ fn unit_text(service: Option<&std::path::Path>) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn systemctl(args: &[&str]) -> std::io::Result<()> {
+pub(crate) fn systemctl(args: &[&str]) -> std::io::Result<()> {
     let out = std::process::Command::new("systemctl")
         .arg("--user")
         .args(args)
@@ -650,13 +802,16 @@ pub fn start_window_service() -> std::io::Result<()> {
 }
 
 pub(crate) fn start_detached() -> std::io::Result<()> {
-    use std::os::unix::process::CommandExt;
-    let local = local_service();
-    let mut cmd = std::process::Command::new(
-        local
+    start_detached_from(
+        local_service()
             .as_deref()
             .unwrap_or_else(|| std::path::Path::new("otozaned")),
-    );
+    )
+}
+
+pub(crate) fn start_detached_from(service: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new(service);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -674,6 +829,78 @@ pub use crate::launchd::{autostart_enabled, set_autostart, start_service};
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_service_fixture() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+
+        let Some(path) = std::env::var_os("OTOZANE_TEST_UPDATE_SOCKET") else {
+            return;
+        };
+        let holds = std::env::var_os("OTOZANE_TEST_UPDATE_HOLD").is_some();
+        let listener = UnixListener::bind(path).unwrap();
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            std::thread::spawn(move || {
+                let reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                for line in reader.lines().map_while(Result::ok) {
+                    let request: super::Request = serde_json::from_str(&line).unwrap();
+                    let response = if holds && request == super::Request::Status {
+                        super::Response::Stopped
+                    } else {
+                        super::Response::Ok
+                    };
+                    writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+                }
+            });
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_stop_exits_a_held_daemon_but_rejects_a_shutdown_timeout() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("service.sock");
+        assert!(super::stop_for_update_at(&socket, || Ok(())).is_ok());
+        for holds in [true, false] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "client::tests::update_service_fixture"])
+                .env("OTOZANE_TEST_UPDATE_SOCKET", &socket)
+                .stdout(std::process::Stdio::null());
+            if holds {
+                command.env("OTOZANE_TEST_UPDATE_HOLD", "1");
+            }
+            let mut child = command.spawn().unwrap();
+            for _ in 0..200 {
+                if socket.exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let bound = socket.exists();
+            let result = super::stop_for_update_at(&socket, || Ok(()));
+            if holds && result.is_ok() {
+                child.wait().unwrap();
+            }
+            let stopped = child.try_wait().unwrap().is_some();
+            if !stopped {
+                let _ = child.kill();
+                child.wait().unwrap();
+            }
+            assert!(bound, "the child never bound the fixture socket");
+            std::fs::remove_file(&socket).unwrap();
+            if holds {
+                result.unwrap();
+                assert!(stopped);
+            } else {
+                assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+                assert!(!stopped);
+            }
+        }
+    }
+
     #[test]
     fn mode_sends_set_muted_only_on_mute_change() {
         use super::Mode::*;

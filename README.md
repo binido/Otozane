@@ -115,9 +115,9 @@ A newer version shows its release notes. **Update** downloads the asset for this
 platform and verifies it against the release's `SHA256SUMS` while Otozane keeps
 running. **Restart and update** asks once more, then installs it and restarts
 the app and the audio service. Audio stops for a few seconds during that
-restart and nothing restarts without the confirmation. A failed download,
-checksum or install leaves the installed version untouched and shows the reason
-in the section.
+restart. Choose **Discard download** to remove a staged update and check again.
+Download and checksum errors leave the installed version untouched. Install
+errors show what failed and any available recovery steps.
 
 What **Update** does depends on how Otozane was installed:
 
@@ -138,8 +138,9 @@ release-page link instead.
 6 hours, 12 hours, 1 day (default) or 1 week. The setting and the last check
 time are saved in `ui.toml`, so a restart does not check again early. A found
 update is announced in the window and the tray or menu bar entry becomes
-**Update to X**. Downloading, installing and restarting still wait for that
-confirmation, so audio never stops for an update mid-call.
+**Update to X**. Installing and restarting require confirmation. A confirmed
+restart interrupts audio, so wait until your call ends before choosing
+**Restart now**.
 
 ## Install
 

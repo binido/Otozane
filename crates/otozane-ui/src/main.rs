@@ -126,18 +126,24 @@ fn parse_size(s: &str) -> Option<[f32; 2]> {
 
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
-    let updates =
-        update::Updater::spawn(update::platform_backend(), app::UiSettings::load().updates);
-    eframe::run_native(
+    let updates = update::Updater::spawn(
+        update::platform_backend(),
+        app::UiSettings::load().updates,
+        app::UiSettings::record_check,
+    );
+    let window_updates = updates.clone();
+    let result = eframe::run_native(
         "Otozane",
         options(),
         Box::new(move |cc| {
-            let has_menubar = menubar::spawn(cc.egui_ctx.clone(), updates.clone())
+            let has_menubar = menubar::spawn(cc.egui_ctx.clone(), window_updates.clone())
                 .map_err(|e| eprintln!("no menu bar icon: {e}"))
                 .is_ok();
-            Ok(Box::new(app::App::new(cc, has_menubar, updates.clone())))
+            Ok(Box::new(app::App::new(cc, has_menubar, window_updates)))
         }),
-    )
+    );
+    updates.finish();
+    result
 }
 
 #[cfg(target_os = "linux")]
@@ -171,23 +177,35 @@ fn main() -> eframe::Result {
     if hidden && client::stop_on_close_enabled() {
         return Ok(());
     }
-    let updates =
-        update::Updater::spawn(update::platform_backend(), app::UiSettings::load().updates);
+    let updates = update::Updater::spawn(
+        update::platform_backend(),
+        app::UiSettings::load().updates,
+        app::UiSettings::record_check,
+    );
+    let result = run_tray(hidden, &updates);
+    updates.finish();
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn run_tray(hidden: bool, updates: &update::Updater) -> eframe::Result {
     let (tx, rx) = std::sync::mpsc::channel();
     let tray = tray::spawn(tx, hidden, updates.clone());
     let Some(tray) = tray else {
-        return window(None, &updates);
+        return window(None, updates);
     };
     if !hidden {
-        window(Some(&tray), &updates)?;
-        if client::stop_on_close_enabled() {
+        window(Some(&tray), updates)?;
+        if updates.snapshot().phase == update::Phase::Restarting || client::stop_on_close_enabled()
+        {
             return Ok(());
         }
     }
     // The window event loop has ended (or never started): wait in the tray.
     while let Ok(tray::Cmd::Show) = rx.recv() {
-        window(Some(&tray), &updates)?;
-        if client::stop_on_close_enabled() {
+        window(Some(&tray), updates)?;
+        if updates.snapshot().phase == update::Phase::Restarting || client::stop_on_close_enabled()
+        {
             break;
         }
     }

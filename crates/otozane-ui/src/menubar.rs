@@ -111,6 +111,9 @@ impl Items {
             }
             show(&app);
         } else if e.id == *self.quit.id() {
+            if self.updates.snapshot().phase.is_handoff() {
+                return;
+            }
             if crate::client::stop_on_close_enabled() {
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {

@@ -155,6 +155,9 @@ impl ksni::Tray for Tray {
                 label: "Quit".into(),
                 icon_name: "application-exit".into(),
                 activate: Box::new(|this: &mut Self| {
+                    if this.updates.snapshot().phase.is_handoff() {
+                        return;
+                    }
                     if let Some(ctx) = &this.window {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }

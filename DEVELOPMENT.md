@@ -61,24 +61,24 @@ result and handles only the app bundle:
   Intel Macs.
 - `stage(dmg, bundle, version)` mounts the DMG read-only, requires exactly one
   `.app`, checks the bundle id, version, Apple Silicon executable and code
-  signature, and copies it to the updates folder. The installed app is not
-  touched. It must be a newer version.
-- `Staged::restart()` writes a shell helper and starts it. The caller sends
-  `Request::Shutdown` and closes the window. The helper waits up to a minute
-  for the process to exit, moves the old bundle to `Otozane-backup-<pid>.app`,
-  moves the staged app in, restores the old app if a step fails, starts
-  `otozaned` again (through the launchd agent when its plist exists, otherwise
-  detached) and opens the new app.
+  signature, and copies the newer bundle to a private directory beside the
+  installed app.
+- `Staged::restart()` prepares a shell helper, stops the audio service and
+  starts the helper. The app exits after the helper starts. The helper waits
+  up to a minute for that exit, swaps the bundles on the same filesystem,
+  starts the service through launchd or as a detached process, and opens the
+  new app. If starting the service or opening the app fails, it stops the new
+  service before restoring the previous bundle.
 - `driver_state()` compares the virtual microphone driver in the bundle with
   the installed one. `needs_reinstall` tells Settings → Virtual microphone to
   offer a reinstall after the update.
 
-Staging, backup and `last-update.log` are under
-`~/Library/Application Support/Otozane/updates` (with `XDG_CONFIG_HOME`,
-below `$XDG_CONFIG_HOME/otozane/updates`). A failed update leaves the staged
-copy removed and the installed app as it was. Nothing in this module runs
-against the real app in tests: `cargo test -p otozane-ui update_macos` builds a
-signed fixture app and DMG in a temporary folder.
+The downloaded DMG is removed after staging. The helper writes
+`last-update.log` under `~/Library/Application Support/Otozane/updates` (or
+`$XDG_CONFIG_HOME/otozane/updates`). If recovery fails, the helper logs the
+location of the backup beside the installed app. The macOS update tests use a
+signed fixture app and DMG in a temporary folder with stand-ins for
+`launchctl` and `open`.
 
 The app is signed ad-hoc and not notarized. Gatekeeper cannot assess that
 signature, so after the checksum, bundle id, version and signature checks the
@@ -100,15 +100,16 @@ need a real machine before the update can be called working:
 - Install the driver from the old release, update to a release with a changed
   driver, and check that Settings → Virtual microphone offers a reinstall and
   that the microphone works afterwards.
-- Try a corrupt or wrong-version DMG: the installed app stays untouched and the
-  error is shown. Kill the helper before it swaps (or make `open` fail) and
-  confirm the old app is restored.
+- Try a corrupt or wrong-version DMG and confirm that the error appears and
+  the installed app still opens. Simulate a failure to open the replacement
+  and confirm that the helper restores the old app and service.
 - Open Otozane from `Downloads` (App Translocation) and from a read-only
   folder: no Update button, only the release-page link.
 - With login start on, check that the launchd agent starts the service from
   the new bundle. With it off, the new app still opens and Start service works.
-- Quit Otozane during the helper's wait: nothing changes; the next check
-  starts cleanly.
+- Let the app exit after confirmation and confirm that the helper replaces
+  the bundle. To test the timeout, keep the old process alive for one minute
+  and confirm that the helper leaves the bundle in place.
 
 ## Scripts
 

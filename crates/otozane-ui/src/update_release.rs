@@ -23,6 +23,8 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// GitHub release metadata used by the update check.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Release {
+    #[serde(default)]
+    pub id: u64,
     pub tag_name: String,
     #[serde(default)]
     pub body: String,
@@ -76,7 +78,7 @@ impl HttpTransport {
             .connect_timeout(CONNECT_TIMEOUT)
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.url().scheme() == "https" {
-                    attempt.follow()
+                    reqwest::redirect::Policy::default().redirect(attempt)
                 } else {
                     attempt.stop()
                 }
@@ -167,7 +169,7 @@ pub fn parse_release(json: &[u8]) -> Result<Release, UpdateError> {
 /// Checks whether a release tag is newer than `current`.
 #[cfg(test)]
 pub fn is_newer(current: &str, tag: &str) -> Result<bool, UpdateError> {
-    Ok(parse_tag(tag)? > parse_tag(current)?)
+    Ok(parse_tag(tag)?.cmp_precedence(&parse_tag(current)?).is_gt())
 }
 
 /// Returns the latest release when its tag is newer than `current`.
@@ -177,7 +179,7 @@ pub fn check(
 ) -> Result<Option<AvailableUpdate>, UpdateError> {
     let release = latest_release(transport)?;
     let version = release.version()?;
-    if version > parse_tag(current)? {
+    if version.cmp_precedence(&parse_tag(current)?).is_gt() {
         Ok(Some(AvailableUpdate { release, version }))
     } else {
         Ok(None)
@@ -216,7 +218,6 @@ pub fn download_verified(
 
     fs::create_dir_all(staging).map_err(UpdateError::Io)?;
     let path = staging.join(asset_name);
-    // ponytail: one staging dir per update; two downloads of the same asset race on the part file.
     let part = staging.join(format!(".{asset_name}.part"));
     let _ = fs::remove_file(&part);
 
@@ -546,6 +547,7 @@ mod tests {
         assert!(release.notes().contains("Update from the app"));
         assert!(is_newer("0.5.0", "v0.6.0").unwrap());
         assert!(!is_newer("0.6.0", "v0.6.0").unwrap());
+        assert!(!is_newer("0.6.0", "v0.6.0+rebuild").unwrap());
         assert!(is_newer("0.9.9", "v0.10.0").unwrap());
         assert!(!is_newer("0.10.0", "v0.9.9").unwrap());
         assert!(is_newer("0.6.0", "v0.6.1-beta.1").unwrap());

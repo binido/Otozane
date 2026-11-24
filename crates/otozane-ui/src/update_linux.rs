@@ -8,7 +8,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -51,17 +50,44 @@ pub enum Action {
 pub enum Service {
     /// `restart` runs `systemctl --user restart otozane.service`.
     Systemd,
-    /// No user unit: the caller shuts `otozaned` down before exiting, and the
-    /// relaunched app starts a fresh one.
+    /// Starts the daemon directly when no user unit is installed.
     Detached,
 }
 
-/// What to restart after an install, applied by the UI once it has handed over.
+/// Relaunch paths captured before installation replaces the running binary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Restart {
-    pub service: Service,
-    /// Relaunch this executable after the service is back.
-    pub app: Option<PathBuf>,
+    service: Service,
+    app: PathBuf,
+}
+
+impl Restart {
+    pub fn current() -> Result<Self, Error> {
+        let app = std::env::current_exe()?;
+        if !app.is_file() {
+            return Err(io::Error::other(
+                "The running app was replaced. Reopen Otozane and check again.",
+            )
+            .into());
+        }
+        Ok(Self {
+            service: if user_unit_exists() {
+                Service::Systemd
+            } else {
+                Service::Detached
+            },
+            app,
+        })
+    }
+
+    pub fn stop(&self) -> io::Result<()> {
+        crate::client::stop_for_update(|| {
+            if self.service == Service::Systemd {
+                crate::client::systemctl(&["stop", "otozane.service"])?;
+            }
+            Ok(())
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -70,10 +96,27 @@ pub enum Error {
     Version(String),
     Arch(String),
     NotInstallable(String),
-    WrongAsset { expected: String, found: String },
+    WrongAsset {
+        expected: String,
+        found: String,
+    },
     Staged(String),
     Layout(String),
-    Command { command: String, detail: String },
+    Command {
+        command: String,
+        detail: String,
+    },
+    Package {
+        command: String,
+        detail: String,
+        state: String,
+        recovery: &'static str,
+    },
+    Rollback {
+        install: io::Error,
+        restore: io::Error,
+        work: PathBuf,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -89,6 +132,24 @@ impl std::fmt::Display for Error {
             Error::Staged(path) => write!(f, "the downloaded update is missing: {path}"),
             Error::Layout(detail) => write!(f, "the release archive is incomplete: {detail}"),
             Error::Command { command, detail } => write!(f, "{command} failed: {detail}"),
+            Error::Package {
+                command,
+                detail,
+                state,
+                recovery,
+            } => write!(
+                f,
+                "{command} failed: {detail}. Package state: {state}. {recovery}"
+            ),
+            Error::Rollback {
+                install,
+                restore,
+                work,
+            } => write!(
+                f,
+                "Replacing files failed: {install}. Rollback was incomplete: {restore}. Recovery files are in {}.",
+                work.display()
+            ),
         }
     }
 }
@@ -176,12 +237,9 @@ impl Install {
     }
 }
 
-/// Installs a verified asset and returns the restart the UI applies after handoff.
-pub fn install(install: &Install, version: &str, staged: &Path) -> Result<Restart, Error> {
+/// Installs a verified asset.
+pub fn install(install: &Install, version: &str, staged: &Path) -> Result<(), Error> {
     let version = release_version(version)?;
-    // The install replaces the running binary, after which `/proc/self/exe`
-    // reads "... (deleted)". Keep the path to relaunch from before that.
-    let app = std::env::current_exe().ok();
     let Action::Install { asset } = install.action(version)? else {
         return Err(Error::NotInstallable(install.label()));
     };
@@ -204,45 +262,24 @@ pub fn install(install: &Install, version: &str, staged: &Path) -> Result<Restar
         Install::User { prefix } => install_tarball(prefix, version, &staged)?,
         Install::Arch | Install::Unknown => unreachable!("action() refuses these"),
     }
-    Ok(Restart {
-        service: if user_unit_exists() {
-            Service::Systemd
-        } else {
-            Service::Detached
-        },
-        app,
-    })
+    Ok(())
 }
 
-/// Restarts the service and replaces this process with a fresh app.
-///
-/// Call it only after the UI has saved its state and released the window; it
-/// does not return on success.
-pub fn restart(plan: &Restart) -> Result<(), Error> {
-    if plan.service == Service::Systemd {
-        let command = "systemctl --user restart otozane.service";
-        let out = Command::new("systemctl")
-            .args(["--user", "restart", "otozane.service"])
-            .output()
-            .map_err(|e| Error::Command {
-                command: command.to_owned(),
-                detail: e.to_string(),
-            })?;
-        if !out.status.success() {
-            return Err(Error::Command {
-                command: command.to_owned(),
-                detail: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
-            });
+pub fn restart(plan: &Restart) -> io::Result<()> {
+    if !crate::client::service_is_running()? {
+        match plan.service {
+            Service::Systemd => crate::client::systemctl(&["restart", "otozane.service"])?,
+            Service::Detached => {
+                crate::client::start_detached_from(&plan.app.with_file_name("otozaned"))?
+            }
         }
+        crate::client::wait_for_service_start()?;
     }
-    let Some(app) = &plan.app else {
-        return Ok(());
-    };
-    let error = Command::new(app).exec();
-    Err(Error::Command {
-        command: app.display().to_string(),
-        detail: error.to_string(),
-    })
+    let mut app = Command::new(&plan.app).spawn()?;
+    std::thread::spawn(move || {
+        let _ = app.wait();
+    });
+    Ok(())
 }
 
 fn release_version(version: &str) -> Result<&str, Error> {
@@ -332,9 +369,30 @@ fn run_root(program: &str, args: &[&str], staged: &Path) -> Result<(), Error> {
     } else {
         stderr.trim().to_owned()
     };
-    Err(Error::Command {
+    let detail = format!("exit {}: {detail}", out.status);
+    let (state, recovery) = if program == "apt-get" {
+        (
+            Command::new("dpkg-query")
+                .args(["-W", "-f=${Status} ${Version}", "otozane"])
+                .output(),
+            "If Otozane is unpacked or half-configured, run sudo dpkg --configure otozane, then retry the update.",
+        )
+    } else {
+        (
+            Command::new("rpm").args(["-q", "otozane"]).output(),
+            "Review the package manager error, then repair or reinstall the Otozane RPM with your package manager.",
+        )
+    };
+    let state = state
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        .unwrap_or_else(|| "could not verify the installed package".into());
+    Err(Error::Package {
         command,
-        detail: format!("exit {}: {detail}", out.status),
+        detail,
+        state,
+        recovery,
     })
 }
 
@@ -368,17 +426,14 @@ fn install_tarball(prefix: &Path, version: &str, staged: &Path) -> Result<(), Er
             prefix.display()
         )));
     }
-    let work = prefix.join(format!(".otozane-update-{}", std::process::id()));
-    let _cleanup = Cleanup(work.clone());
-    if work.exists() {
-        fs::remove_dir_all(&work)?;
-    }
-    fs::create_dir_all(&work)?;
+    let work = tempfile::Builder::new()
+        .prefix(".otozane-update-")
+        .tempdir_in(prefix)?;
     let extracted = Command::new("tar")
         .arg("-xzf")
         .arg(staged)
         .arg("-C")
-        .arg(&work)
+        .arg(work.path())
         .status()?;
     if !extracted.success() {
         return Err(Error::Command {
@@ -386,8 +441,12 @@ fn install_tarball(prefix: &Path, version: &str, staged: &Path) -> Result<(), Er
             detail: "extraction failed".to_owned(),
         });
     }
-    let src = work.join(format!("otozane-v{version}-linux-{arch}"));
-    install_payload(prefix, &src, &work)
+    let src = work.path().join(format!("otozane-v{version}-linux-{arch}"));
+    let result = install_payload(prefix, &src, work.path());
+    if matches!(result, Err(Error::Rollback { .. })) {
+        let _ = work.keep();
+    }
+    result
 }
 
 fn install_payload(prefix: &Path, src: &Path, work: &Path) -> Result<(), Error> {
@@ -397,8 +456,6 @@ fn install_payload(prefix: &Path, src: &Path, work: &Path) -> Result<(), Error> 
     let desktop = stage.join("usr/share/applications/otozane.desktop");
     rewrite_desktop(&desktop, prefix)?;
 
-    // The library goes first, so a failure below leaves the old one in place
-    // through the rollback.
     let files = [
         ("usr/lib/otozane", "lib/otozane"),
         ("usr/bin/otozane", "bin/otozane"),
@@ -417,8 +474,14 @@ fn install_payload(prefix: &Path, src: &Path, work: &Path) -> Result<(), Error> 
     let mut swap = Swap::new(work.join("backup"));
     for (from, to) in files {
         if let Err(e) = swap.put(&stage.join(from), &prefix.join(to)) {
-            swap.rollback();
-            return Err(e.into());
+            return match swap.rollback() {
+                Ok(()) => Err(e.into()),
+                Err(restore) => Err(Error::Rollback {
+                    install: e,
+                    restore,
+                    work: work.to_path_buf(),
+                }),
+            };
         }
     }
     Ok(())
@@ -482,14 +545,6 @@ fn rewrite_desktop(path: &Path, prefix: &Path) -> io::Result<()> {
     fs::write(path, out)
 }
 
-struct Cleanup(PathBuf);
-
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Renames files into place, remembering the old ones to undo a partial install.
 struct Swap {
     backup: PathBuf,
@@ -514,47 +569,43 @@ impl Swap {
         }
         let backup = self.backup.join(self.next.to_string());
         self.next += 1;
-        let had_old = live.exists();
-        if had_old {
-            if let Some(parent) = backup.parent() {
-                fs::create_dir_all(parent)?;
+        match fs::symlink_metadata(live) {
+            Ok(_) => {
+                fs::create_dir_all(&self.backup)?;
+                fs::rename(live, &backup)?;
+                self.moved.push((live.to_path_buf(), backup));
             }
-            fs::rename(live, &backup)?;
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
-        match fs::rename(staged, live) {
-            Ok(()) => {
-                self.installed.push(live.to_path_buf());
-                if had_old {
-                    self.moved.push((live.to_path_buf(), backup));
-                }
-                Ok(())
-            }
-            Err(e) => {
-                if had_old {
-                    let _ = fs::rename(&backup, live);
-                }
-                Err(e)
-            }
-        }
+        fs::rename(staged, live)?;
+        self.installed.push(live.to_path_buf());
+        Ok(())
     }
 
-    fn rollback(&mut self) {
+    fn rollback(&mut self) -> io::Result<()> {
+        let mut result = Ok(());
         for live in self.installed.drain(..).rev() {
-            remove_any(&live);
+            result = result.and(remove_any(&live));
         }
         for (live, backup) in self.moved.drain(..).rev() {
-            let _ = fs::rename(backup, live);
+            result = result.and(fs::rename(&backup, &live).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("could not restore {}: {e}", live.display()),
+                )
+            }));
         }
+        result
     }
 }
 
-fn remove_any(path: &Path) {
-    if let Ok(meta) = fs::symlink_metadata(path) {
-        let _ = if meta.is_dir() {
-            fs::remove_dir_all(path)
-        } else {
-            fs::remove_file(path)
-        };
+fn remove_any(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -775,6 +826,20 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_restore_keeps_the_old_file_in_the_backup() {
+        let t = Temp::new("rollback-backup");
+        let live = t.path().join("live");
+        let backup = t.path().join("backup");
+        fs::write(&live, "old").unwrap();
+        let mut swap = Swap::new(backup.clone());
+        assert!(swap.put(&t.path().join("missing"), &live).is_err());
+
+        fs::create_dir(&live).unwrap();
+        assert!(swap.rollback().is_err());
+        assert_eq!(fs::read_to_string(backup.join("0")).unwrap(), "old");
+    }
+
+    #[test]
     fn installs_a_verified_user_asset() {
         let Some((arch, _)) = host_asset_arch() else {
             return;
@@ -799,7 +864,7 @@ mod tests {
                 .success()
         );
 
-        let restart = install(
+        install(
             &Install::User {
                 prefix: prefix.clone(),
             },
@@ -812,7 +877,6 @@ mod tests {
             fs::read_to_string(prefix.join("bin/otozaned")).unwrap(),
             "new-service"
         );
-        assert_eq!(restart.app, std::env::current_exe().ok());
     }
 
     #[test]

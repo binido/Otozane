@@ -14,7 +14,7 @@
 //! `DEVELOPMENT.md` covers what still needs a manual check.
 //!
 //! The helper's log is `last-update.log` in the updates folder below the
-//! config directory, next to the backup it removes after a successful launch.
+//! config directory.
 
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
@@ -167,63 +167,69 @@ fn driver_version(driver: &Path) -> Option<String> {
 }
 
 /// A validated app copy waiting for the current process to quit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Staged {
+    #[cfg(test)]
     version: String,
-    app: PathBuf,
+    work: Option<tempfile::TempDir>,
     target: PathBuf,
+    installed_version: String,
+    log: PathBuf,
 }
 
 impl Staged {
-    #[cfg(test)]
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
     /// Starts the helper that swaps the bundle once this process exits.
-    ///
-    /// The caller has stopped the service and closed its window. The helper
-    /// waits up to a minute for the process to go away, then replaces the app,
-    /// starts the service again (through the launchd agent when installed) and
-    /// opens Otozane. Nothing is replaced until the UI has exited, and the old
-    /// app is put back when a step fails.
-    pub fn restart(self) -> Result<(), String> {
-        let updates = self
-            .app
-            .parent()
-            .ok_or("The staged app has no folder to update from.")?;
-        let pid = std::process::id();
-        let backup = updates.join(format!("Otozane-backup-{pid}.app"));
-        let log = updates.join("last-update.log");
-        let script = updates.join(format!("restart-{pid}.sh"));
-        let text = restart_script(
-            pid,
-            &self.target,
-            &self.app,
-            &backup,
-            &log,
-            crate::launchd::plist_path().ok().as_deref(),
-        );
-        std::fs::write(&script, text)
-            .map_err(|e| format!("Could not write the update helper: {e}"))?;
-        let mut cmd = Command::new("/bin/sh");
-        cmd.arg(&script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+    pub fn restart(&mut self) -> Result<(), String> {
+        use crate::client;
         use std::os::unix::process::CommandExt;
-        // Own process group, so the helper outlives the app without a terminal.
-        cmd.process_group(0);
-        cmd.spawn()
-            .map_err(|e| format!("Could not start the update helper: {e}"))?;
+
+        let work = self
+            .work
+            .as_ref()
+            .ok_or("The update was already handed off.")?;
+        let lock = crate::update::installation_lock()?;
+        if app_version(&self.target).as_ref() != Some(&self.installed_version) {
+            return Err("The installed bundle changed. Reopen Otozane to check again.".into());
+        }
+        let was_running = client::service_is_running()
+            .map_err(|e| format!("Could not check the audio service status: {e}"))?;
+        let script = work.path().join("restart.sh");
+        let log = std::fs::File::create(&self.log)
+            .map_err(|e| format!("Could not open the update log: {e}"))?;
+        std::fs::write(
+            &script,
+            restart_script(
+                std::process::id(),
+                &self.target,
+                work.path(),
+                crate::launchd::plist_path().ok().as_deref(),
+                was_running,
+            ),
+        )
+        .map_err(|e| format!("Could not write the update helper: {e}"))?;
+        let mut cmd = Command::new("/bin/sh");
+        // The helper holds the installation lock after this process exits.
+        cmd.arg(&script)
+            .stdin(lock)
+            .stderr(log.try_clone().map_err(|e| e.to_string())?)
+            .stdout(log)
+            .process_group(0);
+        let mut handoff = || {
+            client::stop_for_update(|| Ok(()))
+                .map_err(|e| format!("Could not stop the audio service: {e}"))?;
+            cmd.spawn()
+                .map_err(|e| format!("Could not start the update helper: {e}"))?;
+            Ok(())
+        };
+        handoff().map_err(|e| client::restore_after_update_error(was_running, e))?;
+        let _ = self.work.take().unwrap().keep();
         Ok(())
     }
 }
 
-/// Mounts `dmg`, checks the app inside and copies it next to the updates
-/// folder. The installed app is not touched; an error leaves it as it was.
+/// Validates the app in the DMG and stages it beside the installed bundle.
 pub fn stage(dmg: &Path, bundle: &Bundle, version: &str) -> Result<Staged, String> {
-    stage_into(dmg, bundle, version, &update_dir())
+    stage_into(dmg, bundle, version, &crate::update::staging_dir())
 }
 
 fn stage_into(
@@ -242,34 +248,30 @@ fn stage_into(
             bundle.version
         ));
     }
-    std::fs::create_dir_all(updates)
-        .map_err(|e| format!("Could not create {}: {e}", updates.display()))?;
-    let app = updates.join(format!("Otozane-{expected}.app"));
-    let _ = std::fs::remove_dir_all(&app);
-
-    let result = (|| {
-        let mount = TempDir::new("otozane-update-dmg")?;
-        {
-            let _mounted = Mount::attach(dmg, mount.path())?;
-            copy_app(&only_app(mount.path())?, &app)?;
-        }
-        validate_app(&app, expected)?;
-        strip_quarantine(&app);
-        Ok(())
-    })();
-    if let Err(e) = result {
-        let _ = std::fs::remove_dir_all(&app);
-        return Err(e);
+    let parent = bundle
+        .app
+        .parent()
+        .ok_or("The installed app has no parent folder.")?;
+    let work = tempfile::Builder::new()
+        .prefix(".otozane-update-")
+        .tempdir_in(parent)
+        .map_err(|e| format!("Could not stage the new app beside the installed bundle: {e}"))?;
+    let app = work.path().join("staged.app");
+    let mount = TempDir::new("otozane-update-dmg")?;
+    {
+        let _mounted = Mount::attach(dmg, mount.path())?;
+        copy_app(&only_app(mount.path())?, &app)?;
     }
+    validate_app(&app, expected)?;
+    strip_quarantine(&app);
     Ok(Staged {
+        #[cfg(test)]
         version: expected.to_string(),
-        app,
+        work: Some(work),
         target: bundle.app.clone(),
+        installed_version: bundle.version.clone(),
+        log: updates.join("last-update.log"),
     })
-}
-
-fn update_dir() -> PathBuf {
-    crate::update::staging_dir()
 }
 
 fn only_app(mount: &Path) -> Result<PathBuf, String> {
@@ -473,67 +475,104 @@ fn dir_writable(dir: &Path) -> bool {
 fn restart_script(
     pid: u32,
     target: &Path,
-    staged: &Path,
-    backup: &Path,
-    log: &Path,
+    work: &Path,
     plist: Option<&Path>,
+    was_running: bool,
 ) -> String {
     let quote = |p: &Path| crate::driver::shell_quote(&p.to_string_lossy());
     format!(
         r#"#!/bin/sh
-# Otozane update helper: waits for the UI to quit, then swaps the app bundle.
-exec >>{} 2>&1
+target={}
+work={}
+plist={}
+was_running={}
+domain="gui/$(id -u)"
+job="$domain/{label}"
+backup="$work/backup.app"
+service_pid=
+
+start_service() {{
+    if [ -f "$plist" ]; then
+        launchctl bootstrap "$domain" "$plist" || launchctl kickstart -k "$job"
+    else
+        [ -x "$target/Contents/MacOS/otozaned" ] || return 1
+        nohup "$target/Contents/MacOS/otozaned" </dev/null >/dev/null 2>&1 &
+        service_pid=$!
+    fi
+}}
+
+stop_service() {{
+    if [ -f "$plist" ]; then
+        launchctl bootout "$job" || ! launchctl print "$job"
+    elif [ -n "$service_pid" ]; then
+        if kill -0 "$service_pid" 2>/dev/null; then
+            kill -TERM "$service_pid" || return 1
+        fi
+        wait "$service_pid" 2>/dev/null
+        service_pid=
+    fi
+}}
+
+restore_service() {{
+    if [ "$was_running" = 1 ]; then
+        start_service || echo "update: could not restart the previous audio service"
+    fi
+}}
+
+restore() {{
+    if [ -e "$target" ] || ! mv "$backup" "$target"; then
+        echo "update: could not restore the old app from $backup"
+        exit 1
+    fi
+    restore_service
+    open "$target" || echo "update: could not reopen the previous app"
+    rm -rf "$work"
+    exit 1
+}}
+
+cd / || exit 1
 pid={pid}
 if [ "$pid" -gt 0 ]; then
     n=0
     while kill -0 "$pid" 2>/dev/null; do
         n=$((n + 1))
         if [ "$n" -ge 300 ]; then
-            echo "update: the app did not quit, nothing changed"
+            echo "update: the app did not quit in time"
+            restore_service
+            rm -rf "$work"
             exit 1
         fi
         sleep 0.2
     done
 fi
-target={}
-staged={}
-backup={}
-plist={}
+
 echo "update: replacing $target"
-rm -rf "$backup"
 if ! mv "$target" "$backup"; then
     echo "update: could not move the current app aside"
-    exit 1
-fi
-if ! mv "$staged" "$target"; then
-    echo "update: could not install the new app, restoring"
-    mv "$backup" "$target"
-    exit 1
-fi
-# Starts the service from the replaced bundle, through the login agent when
-# one is installed, otherwise detached like a first start without it.
-if [ -f "$plist" ]; then
-    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 ||
-        launchctl kickstart -k "gui/$(id -u)/{label}" >/dev/null 2>&1 || true
-elif [ -x "$target/Contents/MacOS/otozaned" ]; then
-    (cd / && nohup "$target/Contents/MacOS/otozaned" >/dev/null 2>&1 &)
-fi
-if ! open "$target"; then
-    echo "update: could not open the new app, restoring"
-    rm -rf "$target"
-    mv "$backup" "$target"
+    restore_service
     open "$target"
+    rm -rf "$work"
     exit 1
 fi
-rm -rf "$backup"
-rm -f "$0"
+if ! mv "$work/staged.app" "$target"; then
+    echo "update: could not install the new app, restoring"
+    restore
+fi
+if ! start_service || ! open "$target"; then
+    echo "update: could not start the new service or open the new app, restoring"
+    if ! stop_service || ! mv "$target" "$work/failed.app"; then
+        echo "update: could not remove the failed update. The previous app is at $backup"
+        exit 1
+    fi
+    restore
+fi
+rm -rf "$work"
 echo "update: done"
 "#,
-        quote(log),
         quote(target),
-        quote(staged),
-        quote(backup),
+        quote(work),
         plist.map_or_else(|| "''".to_string(), quote),
+        u8::from(was_running),
         label = crate::launchd::LABEL,
     )
 }
@@ -684,17 +723,21 @@ mod tests {
         let installed = detect_in(&executable(&target)).unwrap();
         let updates = root.path().join("updates");
         let staged = stage_into(&dmg, &installed, "v0.6.0", &updates).unwrap();
-        assert_eq!(staged.version(), "0.6.0");
+        assert_eq!(staged.version, "0.6.0");
         assert!(
-            updates
-                .join("Otozane-0.6.0.app/Contents/MacOS/otozane")
+            staged
+                .work
+                .as_ref()
+                .unwrap()
+                .path()
+                .join("staged.app/Contents/MacOS/otozane")
                 .exists()
         );
         assert!(target.join("Contents/MacOS/otozane").exists());
 
         let err = stage_into(&dmg, &installed, "0.7.0", &updates).unwrap_err();
         assert!(err.contains("expected 0.7.0"), "{err}");
-        assert!(!updates.join("Otozane-0.7.0.app").exists());
+        assert_eq!(fs::read_dir(&target_root).unwrap().count(), 2);
 
         let err = stage_into(&dmg, &installed, "0.5.0", &updates).unwrap_err();
         assert!(err.contains("not newer"), "{err}");
@@ -717,8 +760,8 @@ mod tests {
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
 
         let target = root.path().join("Otozane.app");
-        let staged = root.path().join("staged.app");
-        let backup = root.path().join("backup.app");
+        let work = root.path().join("work");
+        let staged = work.join("staged.app");
         let log = root.path().join("last-update.log");
         let plist = root.path().join("agent.plist");
         fs::write(&plist, "").unwrap();
@@ -727,27 +770,29 @@ mod tests {
             fs::create_dir_all(dir).unwrap();
             fs::write(dir.join("which"), which).unwrap();
         };
-        let script = root.path().join("restart.sh");
         let run = |pid| {
+            fs::create_dir_all(&work).unwrap();
+            let script = work.join("restart.sh");
             fs::write(
                 &script,
-                restart_script(pid, &target, &staged, &backup, &log, Some(&plist)),
+                restart_script(pid, &target, &work, Some(&plist), true),
             )
             .unwrap();
-            Command::new("sh")
+            let output = Command::new("sh")
                 .arg(&script)
                 .env("PATH", &path)
                 .env("MARK", &mark)
-                .status()
-                .unwrap()
+                .output()
+                .unwrap();
+            fs::write(&log, output.stdout).unwrap();
+            output.status
         };
 
         make(&target, "old");
         make(&staged, "new");
         assert!(run(0).success());
         assert_eq!(app_marker(&target), "new");
-        assert!(!backup.exists());
-        assert!(!script.exists());
+        assert!(!work.exists());
         let marks = fs::read_to_string(&mark).unwrap();
         assert!(marks.contains("launchctl bootstrap gui/"), "{marks}");
         assert!(marks.contains(&plist.display().to_string()), "{marks}");
@@ -757,11 +802,95 @@ mod tests {
         );
         assert!(fs::read_to_string(&log).unwrap().contains("update: done"));
 
+        fs::write(
+            bin.join("open"),
+            "#!/bin/sh\nwhich=$(cat \"$1/which\")\nprintf '%s\\n' \"$which\" >> \"$MARK\"\n[ \"$which\" = old ]\n",
+        )
+        .unwrap();
+        fs::write(&mark, "").unwrap();
+        make(&target, "old");
+        make(&staged, "new");
+        assert!(!run(0).success());
+        assert_eq!(app_marker(&target), "old");
+        assert!(!work.exists());
+        let lines = fs::read_to_string(&mark).unwrap();
+        let events: Vec<_> = lines.lines().collect();
+        assert_eq!(events.len(), 5, "{lines}");
+        assert!(events[0].contains("launchctl bootstrap"));
+        assert_eq!(events[1], "new");
+        assert!(events[2].contains("launchctl bootout"));
+        assert!(events[3].contains("launchctl bootstrap"));
+        assert_eq!(events[4], "old");
+
         // A missing staged app must leave the installed one exactly as it was.
         make(&target, "old");
         assert!(!run(0).success());
         assert_eq!(app_marker(&target), "old");
-        assert!(!backup.exists());
+        assert!(!work.exists());
         assert!(fs::read_to_string(&log).unwrap().contains("restoring"));
+    }
+    #[test]
+    fn helper_stops_the_detached_replacement_before_restoring_the_old_service() {
+        let root = TempDir::new("otozane-detached-rollback").unwrap();
+        let target = root.path().join("Otozane.app");
+        let work = root.path().join("work");
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let daemon = r#"#!/bin/sh
+kind=$(cat "$(dirname "$0")/which")
+if [ "$kind" = new ]; then
+    trap 'echo "stop new" >> "$MARK"; exit 0' TERM
+    echo "start new" >> "$MARK"
+    while :; do sleep 0.05; done
+else
+    echo "start old" >> "$MARK"
+fi
+"#;
+        for (bundle, version) in [(&target, "old"), (&work.join("staged.app"), "new")] {
+            let dir = bundle.join("Contents/MacOS");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("which"), version).unwrap();
+            let executable = dir.join("otozaned");
+            fs::write(&executable, daemon).unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let open = bin.join("open");
+        fs::write(
+            &open,
+            r#"#!/bin/sh
+kind=$(cat "$1/Contents/MacOS/which")
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if grep -q "start $kind" "$MARK"; then break; fi
+    sleep 0.05
+done
+echo "open $kind" >> "$MARK"
+[ "$kind" = old ]
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+        let script = work.join("restart.sh");
+        fs::write(&script, restart_script(0, &target, &work, None, true)).unwrap();
+        let mark = root.path().join("events");
+        fs::write(&mark, "").unwrap();
+        let output = Command::new("/bin/sh")
+            .arg(script)
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("MARK", &mark)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!work.exists());
+        assert_eq!(
+            fs::read_to_string(mark).unwrap(),
+            "start new\nopen new\nstop new\nstart old\nopen old\n"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("Contents/MacOS/which")).unwrap(),
+            "old"
+        );
     }
 }
