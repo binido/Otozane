@@ -1,5 +1,11 @@
 # Otozane agent guide
 
+## Repository language
+
+Write all repository content in English, including documentation, code comments,
+user-facing text, tests, and release notes. Use English when refreshing
+`BIG-PICTURE.md`, regardless of the conversation language.
+
 ## Project snapshot
 
 Otozane is a Rust desktop application and background service for real-time microphone processing. It captures a physical microphone, applies an effect chain, and exposes **Otozane Microphone** for recording apps. Linux uses PipeWire and WirePlumber. The macOS release targets Apple Silicon on macOS 26+ and uses Core Audio. The default branch is `main`.

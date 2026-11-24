@@ -1,54 +1,54 @@
-# Общая картина Otozane
+# Otozane big picture
 
 <!-- open-steps:begin -->
-_Срез Git от 2026-11-24. Дата рядом со стадией показывает, когда её подтвердили._
+_Git snapshot from 2026-11-24. The date beside a stage shows when it was confirmed._
 
-## Что это
+## What this is
 
-Otozane обрабатывает звук с микрофона и подавляет фоновый шум.
-Для звонка, записи или стрима пользователь выбирает **Otozane Microphone** в своём приложении.
-Программа работает на Linux с PipeWire и на macOS 26 или новее на Apple Silicon.
-Звук обрабатывает фоновая служба `otozaned`. [README.md](README.md)
+Otozane processes microphone audio and reduces background noise.
+For calls, recordings, or streams, select **Otozane Microphone** in the app you use.
+Otozane runs on Linux with PipeWire and on macOS 26 or later on Apple Silicon.
+The `otozaned` background service processes the audio. [README.md](README.md)
 
-GitHub опубликовал версию `v0.5.0` 2026-11-22. [Выпуск](https://github.com/binido/Otozane/releases/tag/v0.5.0)
+GitHub published `v0.5.0` on 2026-11-22. [Release](https://github.com/binido/Otozane/releases/tag/v0.5.0)
 
-## Что есть в проекте
+## What is in it
 
-Отчётов Open Steps по Otozane на 2026-11-24 нет, поэтому стадии в таблице отмечены как «не проверено».
-Файлы с общей ролью и одинаковыми показателями Git объединены в строки.
+As of 2026-11-24, Otozane has no Open Steps reports, so the table marks each stage as “not checked.”
+Rows group files that serve the same purpose and have the same Git measurements.
 
-Проекту 12 дней. Пока ни одна часть не могла оставаться без изменений полгода. Сигнал начнёт различать такие части с 2027-05-10.
+The project is 12 days old. No part has existed long enough to go six months without changes. The signal can first identify parts with six months of inactivity on 2027-05-10.
 
-| Часть проекта | Что делает | Стадия | Последнее изменение | Сигнал |
+| Project area | What it does | Stage | Last worked on | Signal |
 | --- | --- | --- | --- | --- |
-| Обработка звука и управление | Захват микрофона, эффекты, профили, плагины, фоновая служба и окно настроек. VST3 работает на Linux. JSFX требует сборки с ysfx. [crates/](crates/) | не проверено | 2026-11-23 | `active` |
-| Исследования и снимки экрана | Замеры Hush и изображения интерфейса. [docs/](docs/) | не проверено | 2026-11-23 | `active` |
-| Установка | Файлы пакетов Linux, приложения macOS и драйвера виртуального микрофона для macOS. [packaging/](packaging/) | не проверено | 2026-11-22 | `active` |
-| Сборка и проверки | Сборка пакетов и звуковые проверки на Linux и macOS. [scripts/](scripts/) | не проверено | 2026-11-22 | `active` |
-| Состав сборки | Список модулей проекта и зафиксированные версии зависимостей. [Cargo.toml](Cargo.toml), [Cargo.lock](Cargo.lock) | не проверено | 2026-11-22 | `active` |
-| Устройство и разработка | Как проходит звук, как собрать программу и как её проверить. [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPMENT.md](DEVELOPMENT.md) | не проверено | 2026-11-22 | `active` |
-| План работ | Отметки о выполненных этапах и оставшихся задачах. [PLAN.md](PLAN.md) | не проверено | 2026-11-22 | `active` |
-| Сторонние компоненты | Список сторонних компонентов и их лицензий. [THIRD_PARTY.md](THIRD_PARTY.md) | не проверено | 2026-11-22 | `active` |
+| Audio processing and controls | Microphone capture, effects, profiles, plugins, the background service, and the settings window. VST3 runs on Linux. JSFX requires a build with ysfx. [crates/](crates/) | not checked | 2026-11-23 | `active` |
+| Research and screenshots | Hush measurements and screenshots of the interface. [docs/](docs/) | not checked | 2026-11-23 | `active` |
+| Installation | Files for Linux packages, the macOS app, and the macOS virtual microphone driver. [packaging/](packaging/) | not checked | 2026-11-22 | `active` |
+| Build and checks | Scripts to build packages and check audio on Linux and macOS. [scripts/](scripts/) | not checked | 2026-11-22 | `active` |
+| Build inputs | Lists workspace members and pins dependency versions. [Cargo.toml](Cargo.toml), [Cargo.lock](Cargo.lock) | not checked | 2026-11-22 | `active` |
+| Architecture and development | Explains how audio flows and how to build and test the app. [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPMENT.md](DEVELOPMENT.md) | not checked | 2026-11-22 | `active` |
+| Project plan | Tracks completed milestones and remaining work. [PLAN.md](PLAN.md) | not checked | 2026-11-22 | `active` |
+| Third-party components | Lists third-party components and their licenses. [THIRD_PARTY.md](THIRD_PARTY.md) | not checked | 2026-11-22 | `active` |
 
-## Что можно убрать
+## Worth retiring
 
-Кандидатов на удаление по срезу Git нет.
+The Git snapshot shows no candidates for removal.
 
-## Что дальше
+## What is next
 
-### Открытые задачи автора в GitHub
+### Open GitHub issues filed by the project author
 
-- Измерить, почему Hush требует больше времени при обработке каждые 10 мс. Снизить расход энергии без роста числа опоздавших аудиоблоков. [#20, 2026-11-23](https://github.com/binido/Otozane/issues/20)
-- Добавить обновление из приложения и настройку автоматических обновлений. [#23, 2026-11-23](https://github.com/binido/Otozane/issues/23)
-- Добавить раздел «О программе» с версией, лицензией, именем автора и ссылкой на исходный код. [#24, 2026-11-24](https://github.com/binido/Otozane/issues/24)
+- Measure why Hush takes longer per frame when processing runs every 10 ms. Reduce energy use without increasing the number of audio blocks that miss their deadline. [#20, 2026-11-23](https://github.com/binido/Otozane/issues/20)
+- Add in-app updates and a setting for automatic updates. [#23, 2026-11-23](https://github.com/binido/Otozane/issues/23)
+- Add an About section with the version, license, creator’s name, and a link to the source code. [#24, 2026-11-24](https://github.com/binido/Otozane/issues/24)
 
-### Задачи из плана проекта
+### Tasks from the project plan
 
-- Проверить и настроить пресет `Voice` на записи речи. [PLAN.md, 2026-11-11](PLAN.md#next-steps)
-- Рассмотреть плавную подстройку частоты звука взамен пропуска кадров при расхождении частот устройств. [PLAN.md, 2026-11-11](PLAN.md#next-steps)
-- Проверить восстановление после сна и перезапуска PipeWire в реальном сеансе. Проверить, появляется ли значок в трее после выхода и нового входа в систему. [PLAN.md, 2026-11-12 и 2026-11-22](PLAN.md#phases)
-- Поддержать изменение задержки во время работы плагина и окна редакторов. У окон JSFX `@gfx` низкий приоритет. [Этапы](PLAN.md#phases), [следующие шаги](PLAN.md#next-steps), 2026-11-22.
-- Добавить поддержку CLAP и VST3 на macOS. Пройти проверку приложения у Apple перед распространением на macOS (нотаризация). [PLAN.md, 2026-11-14](PLAN.md#phases)
+- Test and tune the `Voice` preset on a speech recording. [PLAN.md, 2026-11-11](PLAN.md#next-steps)
+- Consider using resampling to correct clock drift between devices instead of dropping frames. [PLAN.md, 2026-11-11](PLAN.md#next-steps)
+- Check recovery after suspend and a PipeWire restart in a real desktop session. Check that the tray icon appears after logging out and back in. [PLAN.md, 2026-11-12 and 2026-11-22](PLAN.md#phases)
+- Support latency changes while plugins are running and add plugin editor windows. JSFX `@gfx` windows are low priority. [Phases](PLAN.md#phases), [next steps](PLAN.md#next-steps), 2026-11-22.
+- Add CLAP support and bring VST3 support to macOS. Submit the macOS app to Apple for notarization before distribution. [PLAN.md, 2026-11-14](PLAN.md#phases)
 
-_Возраст и упоминания частей в других файлах проверены по Git 2026-11-24. Стадия опирается на отчёты Open Steps и действует на указанную рядом дату._
+_The Git check on 2026-11-24 measured the project’s age and which parts other files mention. Each stage reflects the Open Steps reports as of the date shown._
 <!-- open-steps:end -->
