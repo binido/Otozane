@@ -18,6 +18,8 @@ mod menubar;
 mod theme;
 #[cfg(target_os = "linux")]
 mod tray;
+#[allow(dead_code)] // wired into Settings by the updates UI
+mod update_release;
 mod widgets;
 
 /// The app icon (`packaging/otozane.svg` rendered at 256 px).
