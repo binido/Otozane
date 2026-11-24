@@ -3,6 +3,7 @@
 //! With a system tray, closing the window hides it to the tray. `--hidden`
 //! starts in the tray (used by the login autostart entry).
 
+mod about;
 mod app;
 mod chrome;
 mod client;
