@@ -153,8 +153,14 @@ impl Backend {
                         Ok(false) => {}
                         Err(e) => shared.set_capture(CaptureState::Error(e.to_string())),
                     }
-                    // Lost the PipeWire connection (e.g. daemon restart); retry.
-                    shared.status.lock().unwrap().virtual_source_ready = false;
+                    // Lost the PipeWire connection (e.g. daemon restart); retry
+                    // with a clean status instead of stale devices.
+                    {
+                        let mut st = shared.status.lock().unwrap();
+                        st.virtual_source_ready = false;
+                        st.devices.clear();
+                        st.capture = CaptureState::Starting;
+                    }
                     std::thread::sleep(Duration::from_secs(1));
                 }
             })
@@ -233,8 +239,10 @@ impl Shared {
 struct Capture {
     target: String,
     channels: usize,
-    _stream: StreamRc,
+    // Fields drop top to bottom: the listener must unregister while its stream
+    // still exists, so it is declared first.
     _listener: StreamListener<()>,
+    _stream: StreamRc,
 }
 
 /// Main-loop state. Only accessed from the PipeWire thread.
@@ -249,10 +257,10 @@ struct Main {
     default_source: Option<String>,
     /// Last default source that was a physical device.
     last_physical_default: Option<String>,
-    _metadata: Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
+    _metadata: Option<(pw::metadata::MetadataListener, pw::metadata::Metadata)>,
     capture: Option<Capture>,
     monitoring: bool,
-    monitor: Option<(StreamRc, StreamListener<()>)>,
+    monitor: Option<(StreamListener<()>, StreamRc)>,
     /// Global ids of our feed stream node and our virtual microphone node.
     output_node: Option<u32>,
     virtual_node: Option<u32>,
@@ -321,6 +329,11 @@ impl Main {
         }
         self.shared.monitor_on.store(false, Ordering::Relaxed);
         self.monitor = None;
+        // Drop audio queued before the monitor stopped; otherwise re-enabling
+        // it replays the last moments of the microphone.
+        if let Ok(mut rx) = self.shared.monitor_rx.lock() {
+            while rx.pop().is_ok() {}
+        }
         if self.monitoring {
             match create_monitor(&self.core, &self.shared) {
                 Ok(m) => {
@@ -464,7 +477,7 @@ fn run(
                         0
                     })
                     .register();
-                s1.borrow_mut()._metadata = Some((md, listener));
+                s1.borrow_mut()._metadata = Some((listener, md));
                 return;
             }
             if obj.type_ == pw::types::ObjectType::Port {
@@ -513,13 +526,19 @@ fn run(
                 .get(*pw::keys::NODE_DESCRIPTION)
                 .or_else(|| props.get(*pw::keys::NODE_NICK))
                 .unwrap_or(name);
+            // Automatic input selection must only choose hardware. A node
+            // without a backing device (loopback, monitor, synthetic test
+            // source) is virtual even when it calls itself Audio/Source.
+            let is_virtual = class == "Audio/Source/Virtual"
+                || props.get("node.virtual") == Some("true")
+                || props.get("device.id").is_none();
             let mut st = s1.borrow_mut();
             st.devices.push((
                 obj.id,
                 Device {
                     name: name.to_string(),
                     description: description.to_string(),
-                    is_virtual: class == "Audio/Source/Virtual",
+                    is_virtual,
                 },
             ));
             st.publish_devices();
@@ -735,8 +754,8 @@ fn create_capture(
     Ok(Capture {
         target: target.to_string(),
         channels,
-        _stream: stream,
         _listener: listener,
+        _stream: stream,
     })
 }
 
@@ -772,7 +791,7 @@ fn playback_cycle(stream: &pw::stream::Stream, fill: impl FnOnce(&mut [f32], usi
 fn create_monitor(
     core: &pw::core::CoreRc,
     shared: &Shared,
-) -> Result<(StreamRc, StreamListener<()>), pw::Error> {
+) -> Result<(StreamListener<()>, StreamRc), pw::Error> {
     let stream = StreamRc::new(
         core.clone(),
         "otozane-monitor",
@@ -808,7 +827,7 @@ fn create_monitor(
         StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS | StreamFlags::RT_PROCESS,
         &mut params,
     )?;
-    Ok((stream, listener))
+    Ok((listener, stream))
 }
 
 pub fn start_virtual_microphone() {
@@ -873,6 +892,7 @@ fn create_playback(
             *pw::keys::NODE_DESCRIPTION => "Otozane Output",
             // Not autoconnected: `Main::link_output` links it to the virtual
             // microphone, so it can never end up on a real sink.
+            "node.autoconnect" => "false",
             "node.dont-move" => "true",
         },
     )?;
