@@ -6,7 +6,7 @@ on:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +33,8 @@ jobs:
             clang cmake pkgconf libpipewire-0.3-dev dpkg-dev rpm desktop-file-utils
 
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Check the tag matches Cargo.toml and CHANGELOG.md
         run: |
@@ -89,6 +91,8 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Read the version
         run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_ENV"
@@ -129,8 +133,12 @@ jobs:
   publish:
     needs: [build, build-macos]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@v7
         with:

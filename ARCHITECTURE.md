@@ -135,7 +135,8 @@ Rules followed on the audio thread:
 - A fully bypassed effect is not processed. When it is re-enabled, the slot
   stays dry for the effect's latency before fading in, so audio left in the
   effect's buffers from before the bypass is never heard.
-- Effects that are removed are faded out (disabled, then removed 15 ms later).
+- Effects that are removed are faded out (disabled, then removed 25 ms later,
+  covering a full 1024-frame audio block plus scheduling margin).
 - Gain ramps per block; dynamics effects smooth their gain per sample.
 - Reordering is applied instantly and can produce a small discontinuity.
 
@@ -213,7 +214,8 @@ library, `libweya_nc`, built from the pinned Hush sources by
 `otozaned` owns the engine and backend. It listens on
 `$XDG_RUNTIME_DIR/otozane.sock` (mode 0600) and speaks newline-delimited JSON
 (`protocol::Request` / `protocol::Response`). Requests over 1 MiB are rejected.
-A second instance refuses to start while the socket answers.
+A second instance refuses to start: it takes an exclusive lock file beside the
+socket and also checks whether the socket answers.
 
 State is saved under `$XDG_CONFIG_HOME/otozane/`. Changes to the active
 profile are written within 100 ms. Unparseable `config.toml` is moved to

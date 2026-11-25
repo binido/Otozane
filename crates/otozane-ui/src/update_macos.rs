@@ -306,7 +306,7 @@ fn only_app(mount: &Path) -> Result<PathBuf, String> {
 }
 
 fn copy_app(src: &Path, dst: &Path) -> Result<(), String> {
-    let mut cmd = Command::new("ditto");
+    let mut cmd = Command::new("/usr/bin/ditto");
     cmd.arg("--norsrc").arg(src).arg(dst);
     run(&mut cmd, "copy the app out of the DMG")?;
     Ok(())
@@ -338,7 +338,7 @@ fn validate_app(app: &Path, expected: &str) -> Result<(), String> {
             ));
         }
     }
-    let mut cmd = Command::new("codesign");
+    let mut cmd = Command::new("/usr/bin/codesign");
     cmd.args(["--verify", "--deep", "--strict"]).arg(app);
     run(&mut cmd, "verify the new app's signature")?;
     Ok(())
@@ -366,7 +366,11 @@ fn strip_quarantine(app: &Path) -> Result<(), String> {
 }
 
 fn is_arm64(exe: &Path) -> bool {
-    let Ok(out) = Command::new("lipo").args(["-archs"]).arg(exe).output() else {
+    let Ok(out) = Command::new("/usr/bin/lipo")
+        .args(["-archs"])
+        .arg(exe)
+        .output()
+    else {
         return false;
     };
     out.status.success()
@@ -394,7 +398,7 @@ struct Mount {
 
 impl Mount {
     fn attach(dmg: &Path, point: &Path) -> Result<Self, String> {
-        let mut cmd = Command::new("hdiutil");
+        let mut cmd = Command::new("/usr/bin/hdiutil");
         cmd.args([
             "attach",
             "-readonly",
@@ -413,7 +417,7 @@ impl Mount {
 
 impl Drop for Mount {
     fn drop(&mut self) {
-        let _ = Command::new("hdiutil")
+        let _ = Command::new("/usr/bin/hdiutil")
             .args(["detach", "-force"])
             .arg(&self.point)
             .stdout(Stdio::null())

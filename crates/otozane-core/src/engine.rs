@@ -12,6 +12,9 @@ pub const MAX_CHANNELS: usize = 2;
 pub const MAX_BLOCK: usize = 1024;
 /// Length of the crossfade used for enable/disable, in frames (10 ms).
 const FADE_FRAMES: f32 = 480.0;
+/// Anything beyond this is not audio. A plugin can emit `f32::MAX`, which
+/// overflows biquad state even though it is finite; clamp it at the boundary.
+const SAMPLE_LIMIT: f32 = 1.0e6;
 
 /// State shared between the controller and one effect instance.
 #[derive(Debug)]
@@ -87,14 +90,12 @@ impl Slot {
             return;
         }
         let crossfade = self.mix != 1.0 || target != 1.0;
-        if crossfade {
-            // The dry path is delayed by the processor latency so toggling an
-            // effect does not shift the signal in time.
-            for (c, ch) in channels.iter().enumerate() {
-                let dry = &mut self.dry[c][..n];
-                dry.copy_from_slice(ch);
-                self.dry_delay[c].process(dry);
-            }
+        // Keep the dry path delayed by the processor latency even while fully
+        // wet, so a later fade-out has aligned audio instead of stale silence.
+        for (c, ch) in channels.iter().enumerate() {
+            let dry = &mut self.dry[c][..n];
+            dry.copy_from_slice(ch);
+            self.dry_delay[c].process(dry);
         }
         // The processor also runs while fading so the crossfade has a wet side.
         self.processor.process(channels, &self.values);
@@ -204,6 +205,16 @@ impl Engine {
 
     fn process(&mut self, buf: &mut [f32], ch: usize) {
         let master = self.shared.processing_enabled.load(Ordering::Relaxed);
+        // A broken capture source or a hosted plugin can emit NaN/Inf. One
+        // such sample permanently poisons filter and detector state, so
+        // replace it at the boundary and after every slot.
+        for s in buf.iter_mut() {
+            *s = if s.is_finite() {
+                s.clamp(-SAMPLE_LIMIT, SAMPLE_LIMIT)
+            } else {
+                0.0
+            };
+        }
         let in_peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         for chunk in buf.chunks_mut(MAX_BLOCK * ch) {
             let n = chunk.len() / ch;
@@ -216,6 +227,7 @@ impl Engine {
             let mut planes: [&mut [f32]; MAX_CHANNELS] = [&mut a[0][..n], &mut b[0][..n]];
             for slot in self.chain.slots.iter_mut().flatten() {
                 slot.process(&mut planes[..ch], master);
+                sanitize(&mut planes[..ch]);
             }
             for (i, frame) in chunk.chunks_exact_mut(ch).enumerate() {
                 for (s, plane) in frame.iter_mut().zip(&self.planes) {
@@ -228,6 +240,18 @@ impl Engine {
         s.input_peak.store(s.input_peak.load().max(in_peak));
         s.output_peak.store(s.output_peak.load().max(out_peak));
         s.blocks.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn sanitize(planes: &mut [&mut [f32]]) {
+    for plane in planes {
+        for s in plane.iter_mut() {
+            *s = if s.is_finite() {
+                s.clamp(-SAMPLE_LIMIT, SAMPLE_LIMIT)
+            } else {
+                0.0
+            };
+        }
     }
 }
 
@@ -326,7 +350,18 @@ impl Controller {
         chain: &[EffectConfig],
         factory: &mut Factory<'_>,
     ) -> Result<(), ControlError> {
-        self.build(chain, self.channels, factory)
+        self.build(chain, self.channels, factory, false)
+    }
+
+    /// Replaces the chain and rebuilds plugin processors from their saved
+    /// state. Built-in effects with the same id and kind are still reused.
+    /// Use this when loading a profile, whose opaque plugin state must win.
+    pub fn restore_chain(
+        &mut self,
+        chain: &[EffectConfig],
+        factory: &mut Factory<'_>,
+    ) -> Result<(), ControlError> {
+        self.build(chain, self.channels, factory, true)
     }
 
     /// Rebuilds every effect of the chain for `channels` (1 or 2). Plugin
@@ -338,7 +373,7 @@ impl Controller {
         factory: &mut Factory<'_>,
     ) -> Result<(), ControlError> {
         assert!((1..=MAX_CHANNELS).contains(&channels));
-        self.build(chain, channels, factory)
+        self.build(chain, channels, factory, false)
     }
 
     fn build(
@@ -346,6 +381,7 @@ impl Controller {
         chain: &[EffectConfig],
         channels: usize,
         factory: &mut Factory<'_>,
+        fresh_plugins: bool,
     ) -> Result<(), ControlError> {
         self.collect_garbage();
         if self.outgoing.slots() == 0 {
@@ -360,7 +396,7 @@ impl Controller {
         let mut infos = Vec::with_capacity(chain.len());
         for cfg in chain {
             let existing = self.slots.iter().position(|s| {
-                !rebuild
+                !(rebuild || (fresh_plugins && cfg.kind == EffectKind::Plugin))
                     && s.shared.id == cfg.id
                     && s.shared.kind == cfg.kind
                     && s.plugin == cfg.plugin
@@ -403,6 +439,10 @@ impl Controller {
                             ),
                         }
                     };
+                    let mut params = params;
+                    for p in &mut params {
+                        p.sanitize();
+                    }
                     let values = values_for(cfg, &params, &fallback);
                     let shared = Arc::new(SlotShared {
                         id: cfg.id,
@@ -629,6 +669,258 @@ mod tests {
         // Then the fade-in, fully wet 480 frames later.
         assert!(buf[101] > 0.5 && buf[101] < 0.51);
         assert_eq!(buf[100 + 480], 1.0);
+    }
+
+    #[test]
+    fn disabling_a_latent_slot_keeps_the_dry_path_aligned() {
+        // Outputs 1.0 with 1000 frames of latency; the input is a steady 0.5.
+        struct Late;
+        impl Processor for Late {
+            fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
+                ch[0].fill(1.0);
+            }
+            fn latency(&self) -> usize {
+                1000
+            }
+        }
+        let shared = Arc::new(SlotShared {
+            id: 1,
+            kind: EffectKind::Gain,
+            enabled: AtomicBool::new(true),
+            params: Box::new([]),
+            meter: AtomicF32::default(),
+        });
+        let mut slot = Slot::new(shared.clone(), Box::new(Late));
+        let mut buf = [0.5f32; 1024];
+        slot.process(&mut [&mut buf], true);
+        assert_eq!(buf[1023], 1.0);
+
+        // Disabling must fade 1.0 down to the latency-aligned dry 0.5, never
+        // into the stale silence the dry delay held before it was primed.
+        shared
+            .enabled
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let mut out = [0.5f32; 1024];
+        slot.process(&mut [&mut out], true);
+        assert!(out.iter().all(|&s| s >= 0.5 - 1e-6), "dry path dropped out");
+        let mut tail = [0.5f32; 1024];
+        slot.process(&mut [&mut tail], true);
+        assert!(tail.iter().all(|&s| (s - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn non_finite_plugin_parameters_are_sanitized() {
+        use crate::config::{PluginFormat, PluginRef};
+        use crate::param::ParamDesc;
+        struct Pass;
+        impl Processor for Pass {
+            fn process(&mut self, _: &mut [&mut [f32]], _: &[f32]) {}
+        }
+        let desc = ParamDesc {
+            key: "p".into(),
+            name: "P".into(),
+            min: f32::NAN,
+            max: f32::INFINITY,
+            default: f32::NAN,
+            unit: String::new(),
+            steps: 0,
+            log: false,
+            choices: Vec::new(),
+        };
+        let mut factory = |_: &EffectConfig| {
+            Ok(External {
+                processor: Box::new(Pass),
+                params: vec![desc.clone()],
+                values: vec![f32::NAN],
+            })
+        };
+        let cfg = EffectConfig::new_plugin(
+            1,
+            PluginRef {
+                format: PluginFormat::Jsfx,
+                path: "test.jsfx".into(),
+                uid: "uid".into(),
+                name: "Test".into(),
+                vendor: String::new(),
+            },
+        );
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(&[cfg], &mut factory).unwrap();
+        let params = ctl.params(1);
+        assert!(
+            params
+                .iter()
+                .all(|p| p.min.is_finite() && p.max.is_finite() && p.default.is_finite())
+        );
+        assert!(ctl.values(1).iter().all(|v| v.is_finite()));
+        eng.process_interleaved(&mut [0.0; 64], 1);
+    }
+
+    #[test]
+    fn huge_finite_plugin_output_does_not_poison_a_builtin() {
+        use crate::config::{PluginFormat, PluginRef};
+        struct Huge;
+        impl Processor for Huge {
+            fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
+                ch[0].fill(f32::MAX);
+            }
+        }
+        let cfg = EffectConfig::new_plugin(
+            1,
+            PluginRef {
+                format: PluginFormat::Jsfx,
+                path: "test.jsfx".into(),
+                uid: "uid".into(),
+                name: "Huge".into(),
+                vendor: String::new(),
+            },
+        );
+        let mut factory = |_: &EffectConfig| {
+            Ok(External {
+                processor: Box::new(Huge),
+                params: Vec::new(),
+                values: Vec::new(),
+            })
+        };
+        let mut eq = EffectConfig::new(2, EffectKind::Equalizer);
+        eq.params.insert("b3_gain".into(), 24.0);
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(&[cfg, eq], &mut factory).unwrap();
+        eng.process_interleaved(&mut vec![0.5; 512], 1);
+        let mut next = vec![0.5f32; 512];
+        eng.process_interleaved(&mut next, 1);
+        assert!(
+            next.iter().all(|s| s.is_finite()) && next[511].abs() > 0.4,
+            "the equalizer state was poisoned"
+        );
+    }
+
+    #[test]
+    fn non_finite_input_does_not_poison_a_builtin() {
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(
+            &[EffectConfig::new(1, EffectKind::Compressor)],
+            &mut no_plugins,
+        )
+        .unwrap();
+        let mut buf = vec![0.5f32; 512];
+        buf[100] = f32::INFINITY;
+        eng.process_interleaved(&mut buf, 1);
+        assert!(eng.shared.input_peak.load().is_finite());
+        let mut next = vec![0.5f32; 512];
+        eng.process_interleaved(&mut next, 1);
+        assert!(
+            next.iter().all(|s| s.is_finite()),
+            "one bad input sample poisoned the compressor"
+        );
+    }
+
+    #[test]
+    fn non_finite_plugin_output_is_sanitized_before_the_next_slot() {
+        use crate::config::{PluginFormat, PluginRef};
+        struct Poison {
+            first: bool,
+        }
+        impl Processor for Poison {
+            fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
+                // Emit one bad block, then a valid signal so recovery is visible.
+                if std::mem::take(&mut self.first) {
+                    ch[0].fill(f32::INFINITY);
+                } else {
+                    ch[0].fill(0.5);
+                }
+            }
+        }
+        let cfg = EffectConfig::new_plugin(
+            1,
+            PluginRef {
+                format: PluginFormat::Jsfx,
+                path: "test.jsfx".into(),
+                uid: "uid".into(),
+                name: "Poison".into(),
+                vendor: String::new(),
+            },
+        );
+        let mut factory = |_: &EffectConfig| {
+            Ok(External {
+                processor: Box::new(Poison { first: true }),
+                params: Vec::new(),
+                values: Vec::new(),
+            })
+        };
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(
+            &[cfg, EffectConfig::new(2, EffectKind::Compressor)],
+            &mut factory,
+        )
+        .unwrap();
+        let mut buf = vec![0.5f32; 512];
+        eng.process_interleaved(&mut buf, 1);
+        assert!(
+            buf.iter().all(|s| s.is_finite()),
+            "plugin output reached the next slot"
+        );
+        let mut next = vec![0.5f32; 512];
+        eng.process_interleaved(&mut next, 1);
+        assert!(
+            next.iter().all(|s| s.is_finite()) && next[0].abs() > 0.0,
+            "the compressor stayed poisoned or silent"
+        );
+    }
+
+    #[test]
+    fn restoring_a_chain_recreates_plugins_from_saved_state() {
+        use crate::config::{PluginFormat, PluginRef};
+        use std::sync::atomic::AtomicUsize;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cfg = || {
+            let mut c = EffectConfig::new_plugin(
+                1,
+                PluginRef {
+                    format: PluginFormat::Jsfx,
+                    path: "test.jsfx".into(),
+                    uid: "uid".into(),
+                    name: "Test".into(),
+                    vendor: String::new(),
+                },
+            );
+            c.state = Some("saved".into());
+            c
+        };
+        let mut factory = {
+            let (calls, seen) = (calls.clone(), seen.clone());
+            move |cfg: &EffectConfig| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                seen.lock().unwrap().push(cfg.state.clone());
+                Ok(External {
+                    processor: Box::new(crate::effects::Passthrough),
+                    params: Vec::new(),
+                    values: Vec::new(),
+                })
+            }
+        };
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(&[cfg()], &mut factory).unwrap();
+        eng.process_interleaved(&mut [0.0; 64], 1);
+        ctl.set_chain(&[cfg()], &mut factory).unwrap();
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "an unchanged chain reuses the plugin"
+        );
+        ctl.restore_chain(&[cfg()], &mut factory).unwrap();
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "a profile restore rebuilds the plugin"
+        );
+        assert_eq!(
+            seen.lock().unwrap().last().cloned().flatten().as_deref(),
+            Some("saved"),
+            "the restored state reaches the factory"
+        );
+        ctl.collect_garbage();
     }
 
     #[test]

@@ -1,0 +1,279 @@
+diff --git a/sources/ysfx.cpp b/sources/ysfx.cpp
+index 3249355..7bfa868 100644
+--- a/sources/ysfx.cpp
++++ b/sources/ysfx.cpp
+@@ -194,6 +194,93 @@ ysfx_config_t *ysfx_get_config(ysfx_t *fx)
+     return fx->config.get();
+ }
+ 
++namespace {
++
++// Source-size bounds for one load. The parser keeps the text it reads, so the
++// per-file cap and the entry-plus-imports total are memory bounds.
++constexpr uint64_t max_source_file_size = 1u << 20;
++constexpr uint64_t max_source_total_size = 8u << 20;
++
++// Counts bytes as they are read and stops a file at its remaining budget.
++class limited_text_reader : public ysfx::text_reader {
++public:
++    limited_text_reader(ysfx::text_reader &inner, uint64_t limit, uint64_t &total)
++        : m_inner(inner), m_limit(limit), m_total(total) {}
++
++    char read_next_char() override
++    {
++        if (m_exceeded)
++            return '\0';
++        if (m_read >= m_limit) {
++            // One extra byte tells "exactly at the limit" apart from "over it"
++            // without counting or retaining that byte.
++            if (m_inner.read_next_char() == '\0')
++                return '\0';
++            m_exceeded = true;
++            return '\0';
++        }
++        char next = m_inner.read_next_char();
++        if (next == '\0')
++            return '\0';
++        ++m_read;
++        ++m_total;
++        return next;
++    }
++
++    char peek_next_char() override
++    {
++        if (m_exceeded || m_read >= m_limit)
++            return '\0';
++        return m_inner.peek_next_char();
++    }
++
++    bool exceeded() const { return m_exceeded; }
++
++private:
++    ysfx::text_reader &m_inner;
++    uint64_t m_limit;
++    uint64_t &m_total;
++    uint64_t m_read = 0;
++    bool m_exceeded = false;
++};
++
++// Opens a source without blocking and checks the opened descriptor, so a FIFO
++// cannot block and a path swap cannot change the type after the check.
++bool open_source(const char *path, ysfx_t *fx, ysfx::FILE_u &stream, ysfx::file_info &info)
++{
++    stream.reset(ysfx::fopen_utf8_source(path));
++    if (!stream) {
++        ysfx_logf(*fx->config, ysfx_log_error, "%s: cannot open file for reading", ysfx::path_file_name(path).c_str());
++        return false;
++    }
++    if (!ysfx::get_stream_file_info(stream.get(), info)) {
++        ysfx_logf(*fx->config, ysfx_log_error, "%s: cannot inspect source file", ysfx::path_file_name(path).c_str());
++        return false;
++    }
++    if (!info.regular) {
++        ysfx_logf(*fx->config, ysfx_log_error, "%s: source is not a regular file", ysfx::path_file_name(path).c_str());
++        return false;
++    }
++    return true;
++}
++
++// Rejects a source that cannot fit the per-file cap or the remaining budget.
++bool check_source_size(const char *path, ysfx_t *fx, const ysfx::file_info &info, uint64_t total_read, uint64_t &limit)
++{
++    if (info.size >= max_source_file_size) {
++        ysfx_logf(*fx->config, ysfx_log_error, "%s: source file is too large", ysfx::path_file_name(path).c_str());
++        return false;
++    }
++    if (total_read >= max_source_total_size || info.size > max_source_total_size - total_read) {
++        ysfx_logf(*fx->config, ysfx_log_error, "%s: source files exceed the load budget", ysfx::path_file_name(path).c_str());
++        return false;
++    }
++    limit = std::min(max_source_file_size, max_source_total_size - total_read);
++    return true;
++}
++
++} // namespace
++
+ bool ysfx_load_file(ysfx_t *fx, const char *filepath, uint32_t loadopts)
+ {
+     ysfx_unload(fx);
+@@ -207,23 +294,35 @@ bool ysfx_load_file(ysfx_t *fx, const char *filepath, uint32_t loadopts)
+     // load the main file
+ 
+     ysfx::file_uid main_uid;
++    uint64_t source_total = 0;
+ 
+     {
+         ysfx_source_unit_u main{new ysfx_source_unit_t};
+ 
+-        ysfx::FILE_u stream{ysfx::fopen_utf8(filepath, "rb")};
+-        if (!stream || !ysfx::get_stream_file_uid(stream.get(), main_uid)) {
++        ysfx::FILE_u stream;
++        ysfx::file_info source_info;
++        if (!open_source(filepath, fx, stream, source_info))
++            return false;
++        uint64_t source_limit;
++        if (!check_source_size(filepath, fx, source_info, source_total, source_limit))
++            return false;
++        if (!ysfx::get_stream_file_uid(stream.get(), main_uid)) {
+             ysfx_logf(*fx->config, ysfx_log_error, "%s: cannot open file for reading", ysfx::path_file_name(filepath).c_str());
+             return false;
+         }
+ 
+         ysfx::stdio_text_reader reader(stream.get());
++        limited_text_reader limited(reader, source_limit, source_total);
+ 
+         ysfx_parse_error error;
+-        if (!ysfx_parse_toplevel(reader, main->toplevel, &error)) {
++        if (!ysfx_parse_toplevel(limited, main->toplevel, &error)) {
+             ysfx_logf(*fx->config, ysfx_log_error, "%s:%u: %s", ysfx::path_file_name(filepath).c_str(), error.line + 1, error.message.c_str());
+             return false;
+         }
++        if (limited.exceeded()) {
++            ysfx_logf(*fx->config, ysfx_log_error, "%s: source exceeds the size budget", ysfx::path_file_name(filepath).c_str());
++            return false;
++        }
+         ysfx_parse_header(main->toplevel.header.get(), main->header);
+ 
+         // validity check
+@@ -279,7 +378,7 @@ bool ysfx_load_file(ysfx_t *fx, const char *filepath, uint32_t loadopts)
+     std::set<ysfx::file_uid> seen;
+ 
+     std::function<bool(const std::string &, const std::string &, uint32_t)> do_next_import =
+-        [fx, &seen, &do_next_import]
++        [fx, &seen, &source_total, &do_next_import]
+         (const std::string &name, const std::string &origin, uint32_t level) -> bool
+         {
+             if (level >= max_import_level) {
+@@ -293,9 +392,13 @@ bool ysfx_load_file(ysfx_t *fx, const char *filepath, uint32_t loadopts)
+                 return false;
+             }
+ 
++            ysfx::FILE_u stream;
++            ysfx::file_info source_info;
++            if (!open_source(imported_path.c_str(), fx, stream, source_info))
++                return false;
++
+             ysfx::file_uid imported_uid;
+-            ysfx::FILE_u stream{ysfx::fopen_utf8(imported_path.c_str(), "rb")};
+-            if (!stream || !ysfx::get_stream_file_uid(stream.get(), imported_uid)) {
++            if (!ysfx::get_stream_file_uid(stream.get(), imported_uid)) {
+                 ysfx_logf(*fx->config, ysfx_log_error, "%s: cannot open file for reading", ysfx::path_file_name(imported_path.c_str()).c_str());
+                 return false;
+             }
+@@ -305,14 +408,22 @@ bool ysfx_load_file(ysfx_t *fx, const char *filepath, uint32_t loadopts)
+                 return true;
+ 
+             // parse it
++            uint64_t source_limit;
++            if (!check_source_size(imported_path.c_str(), fx, source_info, source_total, source_limit))
++                return false;
+             ysfx_source_unit_u unit{new ysfx_source_unit_t};
+             ysfx::stdio_text_reader reader(stream.get());
++            limited_text_reader limited(reader, source_limit, source_total);
+ 
+             ysfx_parse_error error;
+-            if (!ysfx_parse_toplevel(reader, unit->toplevel, &error)) {
++            if (!ysfx_parse_toplevel(limited, unit->toplevel, &error)) {
+                 ysfx_logf(*fx->config, ysfx_log_error, "%s:%u: %s", ysfx::path_file_name(imported_path.c_str()).c_str(), error.line + 1, error.message.c_str());
+                 return false;
+             }
++            if (limited.exceeded()) {
++                ysfx_logf(*fx->config, ysfx_log_error, "%s: source exceeds the size budget", ysfx::path_file_name(imported_path.c_str()).c_str());
++                return false;
++            }
+             ysfx_parse_header(unit->toplevel.header.get(), unit->header);
+ 
+             // process the imported dependencies, *first*
+diff --git a/sources/ysfx_utils.cpp b/sources/ysfx_utils.cpp
+index 2a0a674..3f440f7 100644
+--- a/sources/ysfx_utils.cpp
++++ b/sources/ysfx_utils.cpp
+@@ -49,6 +49,24 @@ FILE *fopen_utf8(const char *path, const char *mode)
+ #endif
+ }
+ 
++FILE *fopen_utf8_source(const char *path)
++{
++#if defined(_WIN32)
++    return fopen_utf8(path, "rb");
++#else
++    int fd = open(path, O_RDONLY | O_NONBLOCK);
++    if (fd == -1)
++        return nullptr;
++    int flags = fcntl(fd, F_GETFL);
++    if (flags != -1)
++        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
++    FILE *stream = fdopen(fd, "rb");
++    if (!stream)
++        close(fd);
++    return stream;
++#endif
++}
++
+ int64_t fseek_lfs(FILE *stream, int64_t off, int whence)
+ {
+ #if defined(_WIN32)
+@@ -342,6 +360,37 @@ std::string encode_base64(const uint8_t *data, size_t len)
+ 
+ //------------------------------------------------------------------------------
+ 
++bool get_stream_file_info(FILE *stream, file_info &info)
++{
++#if defined(_WIN32)
++    int fd = _fileno(stream);
++    if (fd == -1)
++        return false;
++    HANDLE handle = (HANDLE)_get_osfhandle(fd);
++    if (handle == INVALID_HANDLE_VALUE)
++        return false;
++    BY_HANDLE_FILE_INFORMATION file;
++    if (!GetFileInformationByHandle(handle, &file))
++        return false;
++    info.size = ((uint64_t)file.nFileSizeHigh << 32) | file.nFileSizeLow;
++    info.regular = GetFileType(handle) == FILE_TYPE_DISK &&
++        (file.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)) == 0;
++    return true;
++#else
++    int fd = fileno(stream);
++    if (fd == -1)
++        return false;
++    struct stat st;
++    if (fstat(fd, &st) != 0)
++        return false;
++    info.size = (uint64_t)st.st_size;
++    info.regular = S_ISREG(st.st_mode);
++    return true;
++#endif
++}
++
++//------------------------------------------------------------------------------
++
+ bool get_file_uid(const char *path, file_uid &uid)
+ {
+ #ifdef _WIN32
+diff --git a/sources/ysfx_utils.hpp b/sources/ysfx_utils.hpp
+index 86a4dc6..086ce9d 100644
+--- a/sources/ysfx_utils.hpp
++++ b/sources/ysfx_utils.hpp
+@@ -41,6 +41,8 @@ namespace ysfx {
+ YSFX_DEFINE_AUTO_PTR(FILE_u, FILE, fclose);
+ 
+ FILE *fopen_utf8(const char *path, const char *mode);
++// Opens a source without blocking on a FIFO; the caller checks the opened descriptor.
++FILE *fopen_utf8_source(const char *path);
+ int64_t fseek_lfs(FILE *stream, int64_t off, int whence);
+ int64_t ftell_lfs(FILE *stream);
+ 
+@@ -115,6 +117,12 @@ using file_uid = std::pair<uint64_t, uint64_t>;
+ bool get_file_uid(const char *path, file_uid &uid);
+ bool get_stream_file_uid(FILE *stream, file_uid &uid);
+ bool get_descriptor_file_uid(int fd, file_uid &uid);
++
++struct file_info {
++    uint64_t size = 0;
++    bool regular = false;
++};
++bool get_stream_file_info(FILE *stream, file_info &info);
+ #if defined(_WIN32)
+ bool get_handle_file_uid(void *handle, file_uid &uid);
+ #endif

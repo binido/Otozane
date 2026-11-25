@@ -17,4 +17,16 @@ if [[ "$(git -C "$out" rev-parse HEAD 2>/dev/null)" != "$YSFX_COMMIT" ]]; then
   git -C "$out" checkout -q FETCH_HEAD
 fi
 git -C "$out" submodule update -q --init --depth 1
+# The source-size bound lives in a tracked patch, not in the ignored checkout.
+patch="$root/crates/otozane-plugins/patches/ysfx-source-budget.patch"
+if git -C "$out" apply --reverse --check "$patch" 2>/dev/null; then
+  : # already applied
+elif git -C "$out" apply --check "$patch" 2>/dev/null; then
+  git -C "$out" apply "$patch"
+else
+  # Independent local edits are preserved; do not reset the checkout.
+  echo "error: $out has source edits that conflict with $patch" >&2
+  echo "       nothing was changed; restore the pinned files and retry" >&2
+  exit 1
+fi
 echo "Wrote $out"

@@ -9,6 +9,10 @@ use otozane_core::effects::Processor;
 use otozane_core::param::ParamDesc;
 use otozane_core::protocol::{PluginInfo, PluginList};
 
+/// A scan helper prints one JSON array. A hostile plugin can write to stdout
+/// itself, so bound what the parent keeps in memory.
+const SCAN_OUTPUT_LIMIT: usize = 1 << 20;
+
 /// Non-real-time access to a loaded plugin instance.
 pub trait PluginControl: Send {
     /// Display text for a normalized parameter value.
@@ -178,6 +182,9 @@ fn read_scanner_output(
         match stdout.read(&mut buffer) {
             Ok(0) => {}
             Ok(n) => {
+                if output.len() + n > SCAN_OUTPUT_LIMIT {
+                    return Err(Error::other("scanner output too large"));
+                }
                 output.extend_from_slice(&buffer[..n]);
                 continue;
             }
@@ -233,6 +240,20 @@ mod tests {
         assert!(status.success());
         assert_eq!(output.len(), 131_074);
         assert!(output.ends_with(b"[]"));
+    }
+
+    #[test]
+    fn scanner_output_is_bounded() {
+        let mut scanner = Command::new("sh")
+            .arg("-c")
+            .arg("while :; do printf x; done")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let result = super::read_scanner_output(&mut scanner, || false);
+        let _ = scanner.kill();
+        let _ = scanner.wait();
+        assert!(result.is_err());
     }
 
     #[test]

@@ -425,10 +425,21 @@ fn install_rpm(staged: &Path) -> Result<(), Error> {
     }
 }
 
+/// Absolute path of a package manager. pkexec must not resolve it through the
+/// caller's PATH, or a user-writable directory could supply a root program.
+fn root_program(program: &str) -> &Path {
+    match program {
+        "apt-get" => Path::new("/usr/bin/apt-get"),
+        "dnf" => Path::new("/usr/bin/dnf"),
+        "zypper" => Path::new("/usr/bin/zypper"),
+        _ => Path::new(program),
+    }
+}
+
 fn run_root(program: &str, args: &[&str], staged: &Path) -> Result<(), Error> {
     let command = format!("pkexec {program}");
-    let out = Command::new("pkexec")
-        .arg(program)
+    let out = Command::new("/usr/bin/pkexec")
+        .arg(root_program(program))
         .args(args)
         .arg(staged)
         .output()
@@ -449,14 +460,16 @@ fn run_root(program: &str, args: &[&str], staged: &Path) -> Result<(), Error> {
     let detail = format!("exit {}: {detail}", out.status);
     let (state, recovery) = if program == "apt-get" {
         (
-            Command::new("dpkg-query")
+            Command::new("/usr/bin/dpkg-query")
                 .args(["-W", "-f=${Status} ${Version}", "otozane"])
                 .output(),
             "If Otozane is unpacked or half-configured, run sudo dpkg --configure otozane, then retry the update.",
         )
     } else {
         (
-            Command::new("rpm").args(["-q", "otozane"]).output(),
+            Command::new("/usr/bin/rpm")
+                .args(["-q", "otozane"])
+                .output(),
             "Review the package manager error, then repair or reinstall the Otozane RPM with your package manager.",
         )
     };
@@ -507,6 +520,7 @@ fn install_tarball(prefix: &Path, version: &str, staged: &Path) -> Result<(), Er
         .prefix(".otozane-update-")
         .tempdir_in(prefix)?;
     let extracted = Command::new("tar")
+        .arg("--no-same-owner")
         .arg("-xzf")
         .arg(staged)
         .arg("-C")
@@ -565,25 +579,50 @@ fn install_payload(prefix: &Path, src: &Path, work: &Path) -> Result<(), Error> 
 }
 
 fn check_layout(src: &Path) -> Result<(), Error> {
+    // The archive root must be a real directory, not a symlink into the host.
+    if !std::fs::symlink_metadata(src).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err(Error::Layout(
+            "the archive root is not a directory".to_owned(),
+        ));
+    }
     let required = [
-        "usr/bin/otozane",
-        "usr/bin/otozaned",
-        "usr/lib/otozane",
-        "usr/share/applications/otozane.desktop",
-        "usr/share/icons/hicolor/scalable/apps/otozane.svg",
-        "usr/share/licenses/otozane",
-        "usr/share/doc/otozane",
+        ("usr/bin/otozane", false),
+        ("usr/bin/otozaned", false),
+        ("usr/lib/otozane", true),
+        ("usr/share/applications/otozane.desktop", false),
+        ("usr/share/icons/hicolor/scalable/apps/otozane.svg", false),
+        ("usr/share/licenses/otozane", true),
+        ("usr/share/doc/otozane", true),
     ];
-    for rel in required {
-        if !src.join(rel).exists() {
-            return Err(Error::Layout(format!("{rel} is missing from the archive")));
+    for (rel, dir) in required {
+        // A symlinked ancestor would be copied by cp -a and written through.
+        let mut ancestor = PathBuf::new();
+        let mut parts = Path::new(rel).components().peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                break;
+            }
+            ancestor.push(part);
+            let meta = std::fs::symlink_metadata(src.join(&ancestor))
+                .map_err(|e| Error::Layout(format!("{} is missing: {e}", ancestor.display())))?;
+            if !meta.file_type().is_dir() {
+                return Err(Error::Layout(format!(
+                    "{} is not a real directory",
+                    ancestor.display()
+                )));
+            }
+        }
+        // symlink_metadata: a symlinked member must not pass the layout check.
+        let meta = std::fs::symlink_metadata(src.join(rel))
+            .map_err(|e| Error::Layout(format!("{rel} is missing: {e}")))?;
+        if (dir && !meta.is_dir()) || (!dir && !meta.is_file()) {
+            return Err(Error::Layout(format!("{rel} has the wrong type")));
         }
     }
     for rel in ["usr/bin/otozane", "usr/bin/otozaned"] {
-        let executable = src
-            .join(rel)
-            .metadata()
-            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0);
+        // symlink_metadata: a symlinked binary must not be installed.
+        let executable = std::fs::symlink_metadata(src.join(rel))
+            .is_ok_and(|m| m.file_type().is_file() && m.permissions().mode() & 0o111 != 0);
         if !executable {
             return Err(Error::Layout(format!("{rel} is not executable")));
         }
@@ -1039,5 +1078,21 @@ mod tests {
             fs::read_to_string(prefix.join("bin/otozane")).unwrap(),
             "old-app"
         );
+    }
+
+    #[test]
+    fn a_symlinked_ancestor_is_refused() {
+        let t = Temp::new("symlink-ancestor");
+        let src = t.path().join("src");
+        fake_payload(&src);
+        check_layout(&src).unwrap();
+
+        // The leaf is a regular file, but its parent points outside the tree.
+        let outside = t.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("otozane.desktop"), "").unwrap();
+        fs::remove_dir_all(src.join("usr/share/applications")).unwrap();
+        std::os::unix::fs::symlink(&outside, src.join("usr/share/applications")).unwrap();
+        assert!(matches!(check_layout(&src), Err(Error::Layout(_))));
     }
 }

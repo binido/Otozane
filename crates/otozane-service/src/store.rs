@@ -65,7 +65,15 @@ impl Store {
                 let _ = std::fs::rename(&path, path.with_extension("toml.bak"));
                 Settings::default()
             }),
-            Err(_) => Settings::default(),
+            Err(e) => {
+                // A missing file is the first-run case; any other read error
+                // (invalid UTF-8, permissions) must not be silently replaced.
+                if e.kind() != io::ErrorKind::NotFound {
+                    eprintln!("{}: {e}; moved aside", path.display());
+                    let _ = std::fs::rename(&path, path.with_extension("toml.bak"));
+                }
+                Settings::default()
+            }
         }
     }
 
@@ -89,10 +97,49 @@ impl Store {
         names
     }
 
+    /// Whether a profile file already exists. Uses the filesystem rather than
+    /// string folding, so macOS case/Unicode-insensitive collisions count.
+    pub fn profile_exists(&self, name: &str) -> bool {
+        validate_name(name).is_ok() && self.profile_path(name).exists()
+    }
+
+    /// Whether two names resolve to the same profile file.
+    pub fn same_profile(&self, a: &str, b: &str) -> bool {
+        if a == b {
+            return true;
+        }
+        if validate_name(a).is_err() || validate_name(b).is_err() {
+            return false;
+        }
+        use std::os::unix::fs::MetadataExt;
+        match (
+            std::fs::metadata(self.profile_path(a)),
+            std::fs::metadata(self.profile_path(b)),
+        ) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+
     pub fn load_profile(&self, name: &str) -> io::Result<Profile> {
         validate_name(name).map_err(to_io)?;
         let s = std::fs::read_to_string(self.profile_path(name))?;
-        toml::from_str(&s).map_err(to_io)
+        // An empty file is a truncated write, not a valid empty chain.
+        if s.trim().is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "empty profile"));
+        }
+        let mut p: Profile = toml::from_str(&s).map_err(to_io)?;
+        for e in &mut p.chain {
+            e.sanitize();
+        }
+        Ok(p)
+    }
+
+    /// Moves an unreadable profile aside, as `load_settings` does for config.toml.
+    pub fn backup_profile(&self, name: &str) -> io::Result<()> {
+        validate_name(name).map_err(to_io)?;
+        let path = self.profile_path(name);
+        std::fs::rename(&path, path.with_extension("toml.bak"))
     }
 
     pub fn save_profile(&self, name: &str, p: &Profile) -> io::Result<()> {
@@ -136,6 +183,10 @@ mod tests {
 
         store.save_profile("B", &Profile::default()).unwrap();
         store.save_profile("a", &Profile::default()).unwrap();
+        assert!(store.profile_exists("a"));
+        assert!(store.same_profile("a", "a"));
+        #[cfg(target_os = "macos")]
+        assert!(store.same_profile("a", "A"));
         assert_eq!(store.list_profiles(), vec!["a", "B"]);
         store.rename_profile("a", "C").unwrap();
         assert!(store.rename_profile("C", "B").is_err());
@@ -146,6 +197,34 @@ mod tests {
         std::fs::write(dir.join("config.toml"), "not = [valid").unwrap();
         assert_eq!(store.load_settings(), Settings::default());
         assert!(dir.join("config.toml.bak").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_config_and_profile_are_preserved() {
+        let dir = std::env::temp_dir().join(format!("otozane-store-bad-{}", std::process::id()));
+        let store = Store::new(dir.clone());
+        std::fs::create_dir_all(dir.join("profiles")).unwrap();
+        // Invalid UTF-8: read_to_string fails, unlike a TOML syntax error.
+        std::fs::write(dir.join("config.toml"), [0xff, 0xfe]).unwrap();
+        assert_eq!(store.load_settings(), Settings::default());
+        assert!(dir.join("config.toml.bak").exists());
+        // A truncated profile must not become an empty chain.
+        std::fs::write(dir.join("profiles/Empty.toml"), "").unwrap();
+        assert!(store.load_profile("Empty").is_err());
+        store.backup_profile("Empty").unwrap();
+        assert!(dir.join("profiles/Empty.toml.bak").exists());
+        assert!(store.load_profile("Empty").is_err());
+        // A malformed profile's bytes must survive the backup unchanged.
+        let bad = "not = [valid";
+        std::fs::write(dir.join("profiles/Bad.toml"), bad).unwrap();
+        assert!(store.load_profile("Bad").is_err());
+        store.backup_profile("Bad").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("profiles/Bad.toml.bak")).unwrap(),
+            bad
+        );
+        assert!(store.load_profile("Bad").is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -93,6 +93,13 @@ impl EffectConfig {
         }
     }
 
+    /// Drops values that cannot be represented in JSON. Hand-edited TOML can
+    /// contain `nan`/`inf`; echoing one in `Status` makes serde_json write
+    /// `null`, which the UI cannot parse back into `f32`.
+    pub fn sanitize(&mut self) {
+        self.params.retain(|_, v| v.is_finite());
+    }
+
     /// Parameter values in declaration order, clamped to their ranges.
     pub fn values(&self) -> Vec<f32> {
         self.kind
@@ -123,7 +130,17 @@ pub fn config_dir() -> std::path::PathBuf {
 
 /// Returns an id not used by any effect in `chain`.
 pub fn next_id(chain: &[EffectConfig]) -> u64 {
-    chain.iter().map(|e| e.id).max().map_or(1, |m| m + 1)
+    // A hand-edited or imported profile may contain u64::MAX.
+    let mut id = chain
+        .iter()
+        .map(|e| e.id)
+        .max()
+        .and_then(|m| m.checked_add(1))
+        .unwrap_or(1);
+    while chain.iter().any(|e| e.id == id) {
+        id = id.checked_add(1).unwrap_or(1);
+    }
+    id
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -226,6 +243,45 @@ mod tests {
         let e: EffectConfig = toml::from_str("id = 3\nkind = \"gain\"\n").unwrap();
         assert!(e.enabled);
         assert_eq!(e.values(), vec![0.0]);
+    }
+
+    #[test]
+    fn non_finite_params_are_dropped_before_status_serialization() {
+        let mut e = EffectConfig::new(1, EffectKind::Gain);
+        e.params.insert("gain".into(), f32::NAN);
+        e.params.insert("extra".into(), f32::INFINITY);
+        e.params.insert("ok".into(), 3.0);
+        e.sanitize();
+        assert_eq!(e.params.len(), 1);
+        assert_eq!(e.params.get("ok"), Some(&3.0));
+        let status = crate::protocol::Status {
+            version: String::new(),
+            capture: crate::protocol::CaptureState::Starting,
+            input_device: None,
+            devices: Vec::new(),
+            virtual_source_ready: false,
+            processing_enabled: true,
+            stop_on_close: false,
+            muted: false,
+            monitoring: false,
+            input_peak: 0.0,
+            output_peak: 0.0,
+            chain: vec![e],
+            meters: Vec::new(),
+            effects: Vec::new(),
+            active_profile: String::new(),
+            diagnostics: crate::protocol::Diagnostics::default(),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let _: crate::protocol::Status = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn next_id_stays_unique_and_finite_at_the_maximum() {
+        let mut chain = vec![EffectConfig::new(u64::MAX, EffectKind::Gain)];
+        assert_eq!(next_id(&chain), 1);
+        chain.push(EffectConfig::new(1, EffectKind::Gain));
+        assert_eq!(next_id(&chain), 2);
     }
 
     #[test]

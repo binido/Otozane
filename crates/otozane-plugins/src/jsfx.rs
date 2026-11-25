@@ -5,6 +5,10 @@ use crate::Instance;
 use otozane_core::config::PluginRef;
 use std::path::{Path, PathBuf};
 
+/// A JSFX script is parsed in the service process; bound what it can make us read.
+/// The patched ysfx loader uses the same per-file cap and adds a total import budget.
+const MAX_SCRIPT_BYTES: u64 = 1 << 20;
+
 /// Standard JSFX locations: the REAPER user effects folder.
 pub fn default_dirs() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
@@ -36,8 +40,10 @@ pub fn find_scripts(dir: &Path) -> Vec<PathBuf> {
                 }
             } else if ft.is_file()
                 && match p.extension() {
+                    // List an oversized script so the scan can report why it
+                    // was rejected; only extensionless files are read here.
                     Some(x) => x == "jsfx",
-                    None => ft.len() < 1 << 20 && has_desc(&p),
+                    None => ft.len() < MAX_SCRIPT_BYTES && has_desc(&p),
                 }
             {
                 out.push(p);
@@ -48,6 +54,12 @@ pub fn find_scripts(dir: &Path) -> Vec<PathBuf> {
     walk(dir, 0, &mut out);
     out.sort();
     out
+}
+
+/// Discovery skips large scripts; a profile can still name one directly, so
+/// the loader checks again.
+fn script_too_large(path: &Path) -> bool {
+    std::fs::metadata(path).map_or(true, |m| m.len() >= MAX_SCRIPT_BYTES)
 }
 
 fn has_desc(p: &Path) -> bool {
@@ -217,6 +229,11 @@ mod imp {
 
     /// Loads (and with `compile`, compiles) a script. Errors carry ysfx's messages.
     fn load(path: &str, compile: bool) -> Result<Fx, String> {
+        if script_too_large(Path::new(path)) {
+            return Err(format!(
+                "script is missing or larger than {MAX_SCRIPT_BYTES} bytes"
+            ));
+        }
         let cpath = CString::new(path).map_err(|_| "invalid path")?;
         ERRORS.set(Some(String::new()));
         let fx = unsafe {
@@ -247,8 +264,10 @@ mod imp {
 
     /// Reads a script's name, author and tags without compiling it.
     pub fn scan(path: &Path) -> Result<(PluginRef, String), String> {
-        let path_s = path.to_string_lossy();
-        let fx = load(&path_s, false)?;
+        let path_s = path
+            .to_str()
+            .ok_or("plugin path is not valid UTF-8".to_string())?;
+        let fx = load(path_s, false)?;
         let mut name = c_string(unsafe { ffi::ysfx_get_name(fx.0) });
         if name.is_empty() {
             name = path
@@ -264,7 +283,7 @@ mod imp {
             .join("|");
         let plugin = PluginRef {
             format: PluginFormat::Jsfx,
-            path: path_s.into_owned(),
+            path: path_s.to_string(),
             uid: String::new(),
             name,
             vendor: c_string(unsafe { ffi::ysfx_get_author(fx.0) }),
@@ -582,5 +601,43 @@ mod imp {
         fn latency(&self) -> usize {
             self.latency
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_scripts_are_rejected_by_the_loader() {
+        let dir = std::env::temp_dir().join(format!("otozane-jsfx-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.jsfx");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_SCRIPT_BYTES + 1).unwrap();
+        drop(file);
+        let small = dir.join("small.jsfx");
+        std::fs::write(&small, "desc:test\n").unwrap();
+        assert!(script_too_large(&big));
+        assert!(!script_too_large(&small));
+        assert!(script_too_large(&dir.join("missing.jsfx")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn oversized_scripts_are_listed_so_the_scan_can_report_them() {
+        let dir = std::env::temp_dir().join(format!("otozane-jsfx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.jsfx");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_SCRIPT_BYTES + 1).unwrap();
+        drop(file);
+        let small = dir.join("small.jsfx");
+        std::fs::write(&small, "desc:test\n").unwrap();
+        let found = find_scripts(&dir);
+        assert!(found.contains(&small));
+        assert!(found.contains(&big));
+        assert!(script_too_large(&big));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

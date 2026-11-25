@@ -384,9 +384,13 @@ fn is_virtual(uid: &str) -> bool {
 fn error_flag() -> (Arc<AtomicBool>, impl FnMut(cpal::Error) + Send + 'static) {
     let failed = Arc::new(AtomicBool::new(false));
     let f = failed.clone();
+    // cpal delivers overload notifications on the real-time thread, so this
+    // callback must not log or allocate. An xrun is transient; only terminal
+    // errors retire the stream.
     (failed, move |e| {
-        eprintln!("stream error: {e}");
-        f.store(true, Ordering::Relaxed);
+        if e.kind() != cpal::ErrorKind::Xrun {
+            f.store(true, Ordering::Relaxed);
+        }
     })
 }
 

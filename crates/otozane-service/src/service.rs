@@ -13,6 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Time to let the audio thread run a removed effect's 10 ms fade-out before
+/// swapping the chain. A capture callback may carry a full 1024-frame block
+/// (21.3 ms at 48 kHz), so the previous 15 ms could swap before the fade ran.
+const FADE_OUT_WAIT: Duration = Duration::from_millis(25);
+
 pub struct Service {
     pub ctl: Controller,
     pub backend: Backend,
@@ -37,12 +42,34 @@ fn err(e: impl std::fmt::Display) -> Response {
     }
 }
 
+/// A free profile name: the base name, else ` 2`, ` 3`... Checks both the
+/// listing (ASCII case) and the filesystem (macOS folds case and Unicode).
+fn free_profile_name(store: &Store, base: &str) -> String {
+    let taken = store.list_profiles();
+    (1..)
+        .map(|i| {
+            if i == 1 {
+                base.to_string()
+            } else {
+                format!("{base} {i}")
+            }
+        })
+        .find(|n| !taken.iter().any(|t| t.eq_ignore_ascii_case(n)) && !store.profile_exists(n))
+        .unwrap()
+}
+
 impl Service {
     pub fn new(ctl: Controller, backend: Backend, store: Store, settings: Settings) -> Self {
-        let scan = std::fs::read_to_string(store.dir().join("plugins.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let cache = store.dir().join("plugins.json");
+        let scan = match std::fs::read_to_string(&cache) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+                // A truncated or old-schema cache must not suppress a rescan.
+                eprintln!("{}: {e}; rescanning", cache.display());
+                let _ = std::fs::remove_file(&cache);
+                PluginList::default()
+            }),
+            Err(_) => PluginList::default(),
+        };
         Self {
             ctl,
             backend,
@@ -62,26 +89,44 @@ impl Service {
     /// Periodic housekeeping: frees retired chains and writes pending changes.
     pub fn tick(&mut self) {
         self.ctl.collect_garbage();
-        self.flush();
+        let _ = self.flush();
     }
 
-    pub fn flush(&mut self) {
+    /// Writes pending changes. Returns the first failure; pending flags stay
+    /// set so the tick retries. A plugin-state capture failure is reported even
+    /// though the chain itself may be saved.
+    pub fn flush(&mut self) -> Result<(), String> {
+        let mut result = Ok(());
         if self.dirty_profile {
-            let _ = self.capture_plugin_states();
+            let captured = self.capture_plugin_states();
             let p = Profile {
                 chain: self.chain.clone(),
             };
-            match self.store.save_profile(&self.settings.active_profile, &p) {
-                Ok(()) => self.dirty_profile = false,
-                Err(e) => eprintln!("failed to save profile: {e}"),
+            let saved = self
+                .store
+                .save_profile(&self.settings.active_profile, &p)
+                .map_err(|e| format!("failed to save profile: {e}"));
+            // Keep the profile dirty until capture and save both succeed, so a
+            // later tick retries a plugin whose state could not be read.
+            if captured.is_ok() && saved.is_ok() {
+                self.dirty_profile = false;
+            }
+            for msg in [captured.err(), saved.err()].into_iter().flatten() {
+                eprintln!("{msg}");
+                result = Err(msg);
             }
         }
         if self.dirty_settings {
             match self.store.save_settings(&self.settings) {
                 Ok(()) => self.dirty_settings = false,
-                Err(e) => eprintln!("failed to save settings: {e}"),
+                Err(e) => {
+                    let msg = format!("failed to save settings: {e}");
+                    eprintln!("{msg}");
+                    result = Err(msg);
+                }
             }
         }
+        result
     }
 
     /// Copies each plugin's current state into the chain configuration.
@@ -104,7 +149,7 @@ impl Service {
     }
 
     pub fn apply_chain(&mut self, chain: Vec<EffectConfig>) -> Result<(), String> {
-        self.build_chain(chain, self.settings.channels as usize)
+        self.build_chain(chain, self.settings.channels as usize, false)
     }
 
     /// Rebuilds the chain for a new channel count.
@@ -118,7 +163,7 @@ impl Service {
         // Plugins are recreated from the state saved into the chain.
         // A failed save would lose the plugin's recent changes, so nothing is switched.
         self.capture_plugin_states()?;
-        self.build_chain(self.chain.clone(), channels as usize)?;
+        self.build_chain(self.chain.clone(), channels as usize, false)?;
         #[cfg(target_os = "linux")]
         self.backend.set_channels(channels as usize);
         self.settings.channels = channels;
@@ -126,7 +171,17 @@ impl Service {
         Ok(())
     }
 
-    fn build_chain(&mut self, chain: Vec<EffectConfig>, channels: usize) -> Result<(), String> {
+    fn build_chain(
+        &mut self,
+        mut chain: Vec<EffectConfig>,
+        channels: usize,
+        fresh_plugins: bool,
+    ) -> Result<(), String> {
+        // A hand-edited TOML profile can contain nan/inf, which JSON cannot
+        // round-trip in Status.
+        for e in &mut chain {
+            e.sanitize();
+        }
         let mut ids = std::collections::HashSet::new();
         if !chain.iter().all(|e| ids.insert(e.id)) {
             return Err("effect ids must be unique".into());
@@ -143,7 +198,7 @@ impl Service {
             }
         }
         if faded {
-            std::thread::sleep(Duration::from_millis(15));
+            std::thread::sleep(FADE_OUT_WAIT);
         }
         // The audio thread takes updates once per cycle (or per 100 ms pump
         // when idle), so a burst of edits may briefly find the queue full.
@@ -152,14 +207,21 @@ impl Service {
         let mut factory = |cfg: &EffectConfig| -> Result<External, String> {
             let plugin = cfg.plugin.as_ref().ok_or("plugin entry without a plugin")?;
             let state = cfg.state.as_deref().and_then(otozane_plugins::decode_state);
-            let inst = otozane_plugins::instantiate(
+            let inst = match otozane_plugins::instantiate(
                 plugin,
                 state.as_deref(),
                 otozane_core::SAMPLE_RATE as f32,
                 channels,
                 otozane_core::engine::MAX_BLOCK,
-            )
-            .map_err(|e| format!("{}: {e}", plugin.name))?;
+            ) {
+                Ok(inst) => inst,
+                Err(e) => {
+                    // Do not keep a control from an earlier plugin that used
+                    // this id: its state does not belong to this entry.
+                    plugins.remove(&cfg.id);
+                    return Err(format!("{}: {e}", plugin.name));
+                }
+            };
             plugins.insert(cfg.id, inst.control);
             Ok(External {
                 processor: inst.processor,
@@ -171,6 +233,8 @@ impl Service {
         loop {
             let r = if rebuild {
                 self.ctl.set_channels(channels, &chain, &mut factory)
+            } else if fresh_plugins {
+                self.ctl.restore_chain(&chain, &mut factory)
             } else {
                 self.ctl.set_chain(&chain, &mut factory)
             };
@@ -193,9 +257,15 @@ impl Service {
     }
 
     fn switch_profile(&mut self, name: &str) -> Result<(), String> {
+        self.flush()?;
+        if self.dirty_profile || self.dirty_settings {
+            return Err("could not save the current profile".into());
+        }
+        // Read after the flush so reloading the active profile sees the state
+        // that was just saved, not the older file.
         let p = self.store.load_profile(name).map_err(|e| e.to_string())?;
-        self.flush();
-        self.apply_chain(p.chain)?;
+        // The loaded profile's plugin state must win over the live instances.
+        self.build_chain(p.chain, self.settings.channels as usize, true)?;
         self.settings.active_profile = name.to_string();
         self.dirty_settings = true;
         // The chain came from the file; no need to write it back.
@@ -294,15 +364,35 @@ impl Service {
                 if let Err(e) = validate_name(&name) {
                     return err(e);
                 }
-                self.flush();
+                // Re-saving the active profile under its exact name is allowed;
+                // any other collision gets a suffix instead of replacing a file.
+                let name = if name == self.settings.active_profile {
+                    name
+                } else {
+                    free_profile_name(&self.store, &name)
+                };
+                if let Err(e) = self.flush() {
+                    return err(e);
+                }
+                if self.dirty_profile {
+                    return err("could not save the current profile");
+                }
                 self.settings.active_profile = name;
                 self.dirty_settings = true;
                 self.dirty_profile = true;
-                self.flush();
+                if let Err(e) = self.flush() {
+                    return err(e);
+                }
+                if self.dirty_profile || self.dirty_settings {
+                    return err("could not save the profile");
+                }
                 Response::Ok
             }
             Request::DeleteProfile { name } => {
-                if name == self.settings.active_profile {
+                if self
+                    .store
+                    .same_profile(&name, &self.settings.active_profile)
+                {
                     return err("cannot delete the active profile");
                 }
                 match self.store.delete_profile(&name) {
@@ -311,10 +401,17 @@ impl Service {
                 }
             }
             Request::RenameProfile { from, to } => {
-                self.flush();
+                if let Err(e) = self.flush() {
+                    return err(e);
+                }
+                // Resolve identity before the rename; afterwards both path
+                // spellings may be gone, so same_profile can no longer tell.
+                let was_active = self
+                    .store
+                    .same_profile(&from, &self.settings.active_profile);
                 match self.store.rename_profile(&from, &to) {
                     Ok(()) => {
-                        if from == self.settings.active_profile {
+                        if was_active {
                             self.settings.active_profile = to;
                             self.dirty_settings = true;
                         }
@@ -324,7 +421,10 @@ impl Service {
                 }
             }
             Request::GetProfile { name } => {
-                let profile = if name == self.settings.active_profile {
+                let profile = if self
+                    .store
+                    .same_profile(&name, &self.settings.active_profile)
+                {
                     let _ = self.capture_plugin_states();
                     Ok(Profile {
                         chain: self.chain.clone(),
@@ -341,21 +441,15 @@ impl Service {
                 if let Err(e) = validate_name(&name) {
                     return err(e);
                 }
+                let mut profile = profile;
+                for e in &mut profile.chain {
+                    e.sanitize();
+                }
                 let mut ids = std::collections::HashSet::new();
                 if !profile.chain.iter().all(|e| ids.insert(e.id)) {
                     return err("effect ids must be unique");
                 }
-                let taken = self.store.list_profiles();
-                let name = (1..)
-                    .map(|i| {
-                        if i == 1 {
-                            name.clone()
-                        } else {
-                            format!("{name} {i}")
-                        }
-                    })
-                    .find(|n| !taken.contains(n))
-                    .unwrap();
+                let name = free_profile_name(&self.store, &name);
                 match self.store.save_profile(&name, &profile) {
                     Ok(()) => Response::Ok,
                     Err(e) => err(e),
@@ -367,7 +461,7 @@ impl Service {
                 Response::Ok
             }
             Request::Shutdown => {
-                self.flush();
+                let _ = self.flush();
                 Response::Ok
             }
         }
@@ -394,7 +488,10 @@ impl Service {
                 otozane_plugins::scan_dirs(&dirs, &exe, || cancelled.load(Ordering::Relaxed))
             {
                 if let Ok(json) = serde_json::to_string_pretty(&list) {
-                    let _ = std::fs::write(&cache, json);
+                    let tmp = cache.with_extension("json.tmp");
+                    if std::fs::write(&tmp, json).is_ok() {
+                        let _ = std::fs::rename(&tmp, &cache);
+                    }
                 }
                 *scan.lock().unwrap() = list;
             }
@@ -480,5 +577,32 @@ impl Drop for Service {
             cancel.store(true, Ordering::Relaxed);
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fade_out_wait_covers_a_full_audio_block() {
+        let block_ms = otozane_core::engine::MAX_BLOCK * 1000 / otozane_core::SAMPLE_RATE as usize;
+        assert!(FADE_OUT_WAIT.as_millis() >= block_ms as u128);
+    }
+
+    #[test]
+    fn free_profile_names_avoid_case_and_filesystem_collisions() {
+        let dir = std::env::temp_dir().join(format!("otozane-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(dir.clone());
+        store.save_profile("Stream", &Profile::default()).unwrap();
+        assert_eq!(free_profile_name(&store, "stream"), "stream 2");
+        assert_eq!(free_profile_name(&store, "Other"), "Other");
+        #[cfg(target_os = "macos")]
+        {
+            store.save_profile("Ünicode", &Profile::default()).unwrap();
+            assert_eq!(free_profile_name(&store, "ünicode"), "ünicode 2");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

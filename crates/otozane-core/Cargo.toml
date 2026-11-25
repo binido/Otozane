@@ -3,6 +3,7 @@ name = "otozane-core"
 description = "Platform-independent DSP engine and built-in effects for Otozane"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

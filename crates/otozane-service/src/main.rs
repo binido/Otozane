@@ -55,8 +55,11 @@ fn main() {
             "--version" => println!("otozaned {}", env!("CARGO_PKG_VERSION")),
             // Plugin scan helper, started by the service once per bundle.
             "--scan" => {
-                let path = std::env::args().nth(2).unwrap_or_default();
-                match otozane_plugins::scan_bundle(std::path::Path::new(&path)) {
+                let path = std::env::args_os()
+                    .nth(2)
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default();
+                match otozane_plugins::scan_bundle(&path) {
                     Ok(list) => println!("{}", serde_json::to_string(&list).unwrap_or_default()),
                     Err(e) => {
                         println!("error: {e}");
@@ -78,6 +81,9 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = protocol::socket_path();
+    // The connect check alone is racy: two starting processes can both remove
+    // and bind the socket, leaving one unreachable. The lock is authoritative.
+    let _instance = instance_lock(&path.with_extension("lock"))?;
     if UnixStream::connect(&path).is_ok() {
         return Err(format!("already running ({})", path.display()).into());
     }
@@ -131,19 +137,66 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Holds an exclusive lock for the process lifetime. The OS releases it on
+/// exit, so a crashed service never leaves a stale lock behind.
+fn instance_lock(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "another instance is running",
+        )),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
 fn start_processing() -> Result<Service, Box<dyn std::error::Error>> {
     let store = store::Store::new(store::config_dir());
     let mut settings = store.load_settings();
     settings.channels = settings.channels.clamp(1, 2);
-    let profile = store
-        .load_profile(&settings.active_profile)
-        .unwrap_or_else(|e| {
+    if let Err(e) = store::validate_name(&settings.active_profile) {
+        // A bad name makes every profile save fail; recover with a known one.
+        eprintln!(
+            "active profile '{}' is invalid ({e}); using Default",
+            settings.active_profile
+        );
+        settings.active_profile = "Default".into();
+    }
+    let profile = match store.load_profile(&settings.active_profile) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
-                "profile '{}' not loaded ({e}); using defaults",
+                "profile '{}' not found; using defaults",
                 settings.active_profile
             );
             Profile::default()
-        });
+        }
+        Err(e) => {
+            // Move the unreadable file aside so the default chain is not saved
+            // over it; without a backup, continuing would destroy the original.
+            store
+                .backup_profile(&settings.active_profile)
+                .map_err(|b| {
+                    format!(
+                        "profile '{}' is unreadable ({e}) and could not be moved aside: {b}",
+                        settings.active_profile
+                    )
+                })?;
+            eprintln!(
+                "profile '{}' unreadable ({e}); moved aside; using defaults",
+                settings.active_profile
+            );
+            Profile::default()
+        }
+    };
 
     let (ctl, eng) = engine::new(SAMPLE_RATE as f32, settings.channels as usize);
     ctl.shared
@@ -238,4 +291,20 @@ fn write_response(writer: &mut UnixStream, response: &Response) -> std::io::Resu
     let mut out = serde_json::to_string(response)?;
     out.push('\n');
     writer.write_all(out.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_instance_cannot_take_the_lock() {
+        let dir = std::env::temp_dir().join(format!("otozane-lock-{}", std::process::id()));
+        let path = dir.join("otozane.lock");
+        let first = instance_lock(&path).unwrap();
+        assert!(instance_lock(&path).is_err());
+        drop(first);
+        assert!(instance_lock(&path).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
