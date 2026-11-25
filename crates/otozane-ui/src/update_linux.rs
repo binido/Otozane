@@ -586,17 +586,20 @@ fn check_layout(src: &Path) -> Result<(), Error> {
         ));
     }
     let required = [
-        "usr/bin/otozane",
-        "usr/bin/otozaned",
-        "usr/lib/otozane",
-        "usr/share/applications/otozane.desktop",
-        "usr/share/icons/hicolor/scalable/apps/otozane.svg",
-        "usr/share/licenses/otozane",
-        "usr/share/doc/otozane",
+        ("usr/bin/otozane", false),
+        ("usr/bin/otozaned", false),
+        ("usr/lib/otozane", true),
+        ("usr/share/applications/otozane.desktop", false),
+        ("usr/share/icons/hicolor/scalable/apps/otozane.svg", false),
+        ("usr/share/licenses/otozane", true),
+        ("usr/share/doc/otozane", true),
     ];
-    for rel in required {
-        if !src.join(rel).exists() {
-            return Err(Error::Layout(format!("{rel} is missing from the archive")));
+    for (rel, dir) in required {
+        // symlink_metadata: a symlinked member must not pass the layout check.
+        let meta = std::fs::symlink_metadata(src.join(rel))
+            .map_err(|e| Error::Layout(format!("{rel} is missing: {e}")))?;
+        if (dir && !meta.is_dir()) || (!dir && !meta.is_file()) {
+            return Err(Error::Layout(format!("{rel} has the wrong type")));
         }
     }
     for rel in ["usr/bin/otozane", "usr/bin/otozaned"] {
