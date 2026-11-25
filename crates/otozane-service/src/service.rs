@@ -42,12 +42,20 @@ fn err(e: impl std::fmt::Display) -> Response {
     }
 }
 
-/// Whether `name` would replace another profile. Profile names become file
-/// names, and macOS's default filesystem is case-insensitive, so `stream`
-/// would overwrite `Stream.toml`. The active profile may be saved again under
-/// its own exact name.
-fn profile_name_taken(names: &[String], name: &str, active: &str) -> bool {
-    name != active && names.iter().any(|n| n.eq_ignore_ascii_case(name))
+/// A free profile name: the base name, else ` 2`, ` 3`... Checks both the
+/// listing (ASCII case) and the filesystem (macOS folds case and Unicode).
+fn free_profile_name(store: &Store, base: &str) -> String {
+    let taken = store.list_profiles();
+    (1..)
+        .map(|i| {
+            if i == 1 {
+                base.to_string()
+            } else {
+                format!("{base} {i}")
+            }
+        })
+        .find(|n| !taken.iter().any(|t| t.eq_ignore_ascii_case(n)) && !store.profile_exists(n))
+        .unwrap()
 }
 
 impl Service {
@@ -81,26 +89,41 @@ impl Service {
     /// Periodic housekeeping: frees retired chains and writes pending changes.
     pub fn tick(&mut self) {
         self.ctl.collect_garbage();
-        self.flush();
+        let _ = self.flush();
     }
 
-    pub fn flush(&mut self) {
+    /// Writes pending changes. Returns the first failure; pending flags stay
+    /// set so the tick retries. A plugin-state capture failure is reported even
+    /// though the chain itself may be saved.
+    pub fn flush(&mut self) -> Result<(), String> {
+        let mut result = Ok(());
         if self.dirty_profile {
-            let _ = self.capture_plugin_states();
+            if let Err(e) = self.capture_plugin_states() {
+                result = Err(e);
+            }
             let p = Profile {
                 chain: self.chain.clone(),
             };
             match self.store.save_profile(&self.settings.active_profile, &p) {
                 Ok(()) => self.dirty_profile = false,
-                Err(e) => eprintln!("failed to save profile: {e}"),
+                Err(e) => {
+                    let msg = format!("failed to save profile: {e}");
+                    eprintln!("{msg}");
+                    result = Err(msg);
+                }
             }
         }
         if self.dirty_settings {
             match self.store.save_settings(&self.settings) {
                 Ok(()) => self.dirty_settings = false,
-                Err(e) => eprintln!("failed to save settings: {e}"),
+                Err(e) => {
+                    let msg = format!("failed to save settings: {e}");
+                    eprintln!("{msg}");
+                    result = Err(msg);
+                }
             }
         }
+        result
     }
 
     /// Copies each plugin's current state into the chain configuration.
@@ -232,7 +255,7 @@ impl Service {
 
     fn switch_profile(&mut self, name: &str) -> Result<(), String> {
         let p = self.store.load_profile(name).map_err(|e| e.to_string())?;
-        self.flush();
+        self.flush()?;
         if self.dirty_profile || self.dirty_settings {
             return Err("could not save the current profile".into());
         }
@@ -336,28 +359,35 @@ impl Service {
                 if let Err(e) = validate_name(&name) {
                     return err(e);
                 }
-                if profile_name_taken(
-                    &self.store.list_profiles(),
-                    &name,
-                    &self.settings.active_profile,
-                ) {
-                    return err(format!("profile '{name}' already exists"));
+                // Re-saving the active profile under its exact name is allowed;
+                // any other collision gets a suffix instead of replacing a file.
+                let name = if name == self.settings.active_profile {
+                    name
+                } else {
+                    free_profile_name(&self.store, &name)
+                };
+                if let Err(e) = self.flush() {
+                    return err(e);
                 }
-                self.flush();
                 if self.dirty_profile {
                     return err("could not save the current profile");
                 }
                 self.settings.active_profile = name;
                 self.dirty_settings = true;
                 self.dirty_profile = true;
-                self.flush();
+                if let Err(e) = self.flush() {
+                    return err(e);
+                }
                 if self.dirty_profile || self.dirty_settings {
                     return err("could not save the profile");
                 }
                 Response::Ok
             }
             Request::DeleteProfile { name } => {
-                if name.eq_ignore_ascii_case(&self.settings.active_profile) {
+                if self
+                    .store
+                    .same_profile(&name, &self.settings.active_profile)
+                {
                     return err("cannot delete the active profile");
                 }
                 match self.store.delete_profile(&name) {
@@ -366,10 +396,15 @@ impl Service {
                 }
             }
             Request::RenameProfile { from, to } => {
-                self.flush();
+                if let Err(e) = self.flush() {
+                    return err(e);
+                }
                 match self.store.rename_profile(&from, &to) {
                     Ok(()) => {
-                        if from == self.settings.active_profile {
+                        if self
+                            .store
+                            .same_profile(&from, &self.settings.active_profile)
+                        {
                             self.settings.active_profile = to;
                             self.dirty_settings = true;
                         }
@@ -379,7 +414,10 @@ impl Service {
                 }
             }
             Request::GetProfile { name } => {
-                let profile = if name == self.settings.active_profile {
+                let profile = if self
+                    .store
+                    .same_profile(&name, &self.settings.active_profile)
+                {
                     let _ = self.capture_plugin_states();
                     Ok(Profile {
                         chain: self.chain.clone(),
@@ -404,17 +442,7 @@ impl Service {
                 if !profile.chain.iter().all(|e| ids.insert(e.id)) {
                     return err("effect ids must be unique");
                 }
-                let taken = self.store.list_profiles();
-                let name = (1..)
-                    .map(|i| {
-                        if i == 1 {
-                            name.clone()
-                        } else {
-                            format!("{name} {i}")
-                        }
-                    })
-                    .find(|n| !taken.iter().any(|t| t.eq_ignore_ascii_case(n)))
-                    .unwrap();
+                let name = free_profile_name(&self.store, &name);
                 match self.store.save_profile(&name, &profile) {
                     Ok(()) => Response::Ok,
                     Err(e) => err(e),
@@ -426,7 +454,7 @@ impl Service {
                 Response::Ok
             }
             Request::Shutdown => {
-                self.flush();
+                let _ = self.flush();
                 Response::Ok
             }
         }
@@ -556,12 +584,18 @@ mod tests {
     }
 
     #[test]
-    fn profile_names_collide_case_insensitively() {
-        let names = vec!["Stream".to_string()];
-        assert!(profile_name_taken(&names, "stream", "Default"));
-        assert!(profile_name_taken(&names, "Stream", "Default"));
-        // Re-saving the active profile under its exact name is allowed.
-        assert!(!profile_name_taken(&names, "Stream", "Stream"));
-        assert!(!profile_name_taken(&names, "Other", "Stream"));
+    fn free_profile_names_avoid_case_and_filesystem_collisions() {
+        let dir = std::env::temp_dir().join(format!("otozane-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(dir.clone());
+        store.save_profile("Stream", &Profile::default()).unwrap();
+        assert_eq!(free_profile_name(&store, "stream"), "stream 2");
+        assert_eq!(free_profile_name(&store, "Other"), "Other");
+        #[cfg(target_os = "macos")]
+        {
+            store.save_profile("Ünicode", &Profile::default()).unwrap();
+            assert_eq!(free_profile_name(&store, "ünicode"), "ünicode 2");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

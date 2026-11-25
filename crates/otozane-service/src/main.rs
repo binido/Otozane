@@ -162,6 +162,14 @@ fn start_processing() -> Result<Service, Box<dyn std::error::Error>> {
     let store = store::Store::new(store::config_dir());
     let mut settings = store.load_settings();
     settings.channels = settings.channels.clamp(1, 2);
+    if let Err(e) = store::validate_name(&settings.active_profile) {
+        // A bad name makes every profile save fail; recover with a known one.
+        eprintln!(
+            "active profile '{}' is invalid ({e}); using Default",
+            settings.active_profile
+        );
+        settings.active_profile = "Default".into();
+    }
     let profile = match store.load_profile(&settings.active_profile) {
         Ok(p) => p,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
