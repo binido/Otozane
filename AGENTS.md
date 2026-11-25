@@ -33,7 +33,7 @@ The backends feed the engine interleaved `f32` at 48 kHz, mono or stereo, in int
 
 ## Tooling and validation
 
-- Use stable Rust and Cargo with edition 2024. The locked `egui`/`eframe` 0.37.0 require Rust 1.95 even though the workspace declares 1.85. The backends use `pipewire` 0.10 and `cpal` 0.18.
+- Use stable Rust and Cargo with edition 2024. The workspace requires Rust 1.95, which the locked `egui`/`eframe` 0.37.0 need. The backends use `pipewire` 0.10 and `cpal` 0.18.
 - **Linux** needs a C/C++ toolchain, Clang, `pkgconf`, and PipeWire development headers (`libpipewire-0.3-dev` on Debian). Use system RNNoise where packaged or run `scripts/build-rnnoise.sh` to supply the static library. Audio checks require a running PipeWire/WirePlumber session, PipeWire tools, and Python 3.
 - **macOS** needs Xcode command-line tools. Run `scripts/build-rnnoise.sh` before linking. For virtual microphone checks, build the driver with `scripts/build-driver.sh` (Git and CMake), install it via the app, and allow microphone access. The E2E script also needs FFmpeg and Python 3.
 - Run `scripts/build-hush.sh` to build the pinned Hush runtime and copy its model bundle, and `scripts/fetch-ysfx.sh` before building and testing JSFX. Both scripts need Git and place their output in `third_party/`. The JSFX build also needs CMake and a C++ toolchain.

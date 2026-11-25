@@ -335,10 +335,10 @@ about the `device.id` heuristic is C-36.
   statically; real-library latency (RNNoise/Hush) was not measured.
 - `cargo audit`/`cargo deny` are not installed; dependency advisories were not
   scanned. Version/CI review is in `COVERAGE.md`.
-- The workspace declares `rust-version = "1.85"`, but `egui`/`eframe` 0.37
-  requires 1.95 and the new `File::try_lock` startup lock requires 1.89.
-  `AGENTS.md` already records this mismatch; the manifest was not changed.
-  Builds use the stable toolchain (1.96 here).
+- The workspace declared `rust-version = "1.85"`, but `egui`/`eframe` 0.37
+  requires 1.95 and the `File::try_lock` startup lock requires 1.89. The
+  manifest and build instructions now declare 1.95. Builds use the stable
+  toolchain (1.96 here).
 - VST3 plugins were not loaded; JSFX integration tests ran. In-process plugin
   crashes and hangs remain a documented limitation.
 

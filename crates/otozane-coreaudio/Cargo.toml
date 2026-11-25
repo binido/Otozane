@@ -3,6 +3,7 @@ name = "otozane-coreaudio"
 description = "Core Audio backend for Otozane (macOS)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

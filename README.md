@@ -274,7 +274,7 @@ This setting is off by default. Turning it on turns off and disables login start
 Requirements:
 
 - Linux with PipeWire and WirePlumber (developed on CachyOS, PipeWire 1.6).
-- Rust stable 1.85+, `clang` (for PipeWire bindings), `pkgconf`.
+- Rust stable 1.95+, `clang` (for PipeWire bindings), `pkgconf`.
 - System libraries `pipewire` and `rnnoise`. On Arch: `pacman -S pipewire rnnoise clang`.
 - For Hush Noise Suppression: `git` and `scripts/build-hush.sh` (Linux and macOS), which builds
   the Hush runtime from source into `third_party/hush` (about 2 minutes). Without
