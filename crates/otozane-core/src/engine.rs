@@ -863,8 +863,9 @@ mod tests {
         use crate::config::{PluginFormat, PluginRef};
         use std::sync::atomic::AtomicUsize;
         let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cfg = || {
-            EffectConfig::new_plugin(
+            let mut c = EffectConfig::new_plugin(
                 1,
                 PluginRef {
                     format: PluginFormat::Jsfx,
@@ -873,15 +874,21 @@ mod tests {
                     name: "Test".into(),
                     vendor: String::new(),
                 },
-            )
+            );
+            c.state = Some("saved".into());
+            c
         };
-        let mut factory = |_: &EffectConfig| {
-            calls.fetch_add(1, Ordering::Relaxed);
-            Ok(External {
-                processor: Box::new(crate::effects::Passthrough),
-                params: Vec::new(),
-                values: Vec::new(),
-            })
+        let mut factory = {
+            let (calls, seen) = (calls.clone(), seen.clone());
+            move |cfg: &EffectConfig| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                seen.lock().unwrap().push(cfg.state.clone());
+                Ok(External {
+                    processor: Box::new(crate::effects::Passthrough),
+                    params: Vec::new(),
+                    values: Vec::new(),
+                })
+            }
         };
         let (mut ctl, mut eng) = new(48_000.0, 1);
         ctl.set_chain(&[cfg()], &mut factory).unwrap();
@@ -897,6 +904,11 @@ mod tests {
             calls.load(Ordering::Relaxed),
             2,
             "a profile restore rebuilds the plugin"
+        );
+        assert_eq!(
+            seen.lock().unwrap().last().cloned().flatten().as_deref(),
+            Some("saved"),
+            "the restored state reaches the factory"
         );
         ctl.collect_garbage();
     }
