@@ -78,7 +78,7 @@ public:
         for (UInt32 i = 0; i < frameCount; i++) {
             const SInt64 t = start + i;
             // Only frames of the current run that the ring still holds.
-            if (t >= run && t < end && end - t <= RingFrames) {
+            if (t >= run && t < end && end - t < RingFrames) {
                 std::memcpy(&out[i * Channels],
                     &ring_[(t & (RingFrames - 1)) * Channels],
                     Channels * sizeof(Float32));
@@ -161,6 +161,11 @@ extern "C" void* OtozaneDriverEntryPoint(CFAllocatorRef, CFUUIDRef typeUUID)
     if (!CFEqual(typeUUID, kAudioServerPlugInTypeUUID)) {
         return nullptr;
     }
-    static std::shared_ptr<aspl::Driver> driver = CreateDriver();
-    return driver->GetReference();
+    // Never let a C++ exception unwind into the Core Audio host.
+    try {
+        static std::shared_ptr<aspl::Driver> driver = CreateDriver();
+        return driver->GetReference();
+    } catch (...) {
+        return nullptr;
+    }
 }
