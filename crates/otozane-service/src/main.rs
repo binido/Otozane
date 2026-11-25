@@ -180,13 +180,20 @@ fn start_processing() -> Result<Service, Box<dyn std::error::Error>> {
             Profile::default()
         }
         Err(e) => {
-            // Cover a truncated or hand-edited file: keep it as .bak instead
-            // of letting the default chain overwrite it on the next flush.
+            // Move the unreadable file aside so the default chain is not saved
+            // over it; without a backup, continuing would destroy the original.
+            store
+                .backup_profile(&settings.active_profile)
+                .map_err(|b| {
+                    format!(
+                        "profile '{}' is unreadable ({e}) and could not be moved aside: {b}",
+                        settings.active_profile
+                    )
+                })?;
             eprintln!(
                 "profile '{}' unreadable ({e}); moved aside; using defaults",
                 settings.active_profile
             );
-            let _ = store.backup_profile(&settings.active_profile);
             Profile::default()
         }
     };

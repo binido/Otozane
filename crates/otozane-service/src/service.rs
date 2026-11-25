@@ -98,19 +98,22 @@ impl Service {
     pub fn flush(&mut self) -> Result<(), String> {
         let mut result = Ok(());
         if self.dirty_profile {
-            if let Err(e) = self.capture_plugin_states() {
-                result = Err(e);
-            }
+            let captured = self.capture_plugin_states();
             let p = Profile {
                 chain: self.chain.clone(),
             };
-            match self.store.save_profile(&self.settings.active_profile, &p) {
-                Ok(()) => self.dirty_profile = false,
-                Err(e) => {
-                    let msg = format!("failed to save profile: {e}");
-                    eprintln!("{msg}");
-                    result = Err(msg);
-                }
+            let saved = self
+                .store
+                .save_profile(&self.settings.active_profile, &p)
+                .map_err(|e| format!("failed to save profile: {e}"));
+            // Keep the profile dirty until capture and save both succeed, so a
+            // later tick retries a plugin whose state could not be read.
+            if captured.is_ok() && saved.is_ok() {
+                self.dirty_profile = false;
+            }
+            for msg in [captured.err(), saved.err()].into_iter().flatten() {
+                eprintln!("{msg}");
+                result = Err(msg);
             }
         }
         if self.dirty_settings {
@@ -254,11 +257,13 @@ impl Service {
     }
 
     fn switch_profile(&mut self, name: &str) -> Result<(), String> {
-        let p = self.store.load_profile(name).map_err(|e| e.to_string())?;
         self.flush()?;
         if self.dirty_profile || self.dirty_settings {
             return Err("could not save the current profile".into());
         }
+        // Read after the flush so reloading the active profile sees the state
+        // that was just saved, not the older file.
+        let p = self.store.load_profile(name).map_err(|e| e.to_string())?;
         // The loaded profile's plugin state must win over the live instances.
         self.build_chain(p.chain, self.settings.channels as usize, true)?;
         self.settings.active_profile = name.to_string();
@@ -399,12 +404,14 @@ impl Service {
                 if let Err(e) = self.flush() {
                     return err(e);
                 }
+                // Resolve identity before the rename; afterwards both path
+                // spellings may be gone, so same_profile can no longer tell.
+                let was_active = self
+                    .store
+                    .same_profile(&from, &self.settings.active_profile);
                 match self.store.rename_profile(&from, &to) {
                     Ok(()) => {
-                        if self
-                            .store
-                            .same_profile(&from, &self.settings.active_profile)
-                        {
+                        if was_active {
                             self.settings.active_profile = to;
                             self.dirty_settings = true;
                         }
