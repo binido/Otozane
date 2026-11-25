@@ -1,0 +1,5 @@
+desc:Import Utility
+author:Otozane
+
+@init
+util_gain = 0.5;

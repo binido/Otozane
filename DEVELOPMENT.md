@@ -134,7 +134,7 @@ need a real machine before the update can be called working:
 | `scripts/ipc.py JSON...` | Sends raw requests to the running service. |
 | `scripts/screenshot.sh OUT.png [page] [dark\|light]` | Renders the UI and saves a screenshot (uses `OTOZANE_SCREENSHOT`, `OTOZANE_PAGE`, `OTOZANE_THEME`; `OTOZANE_SCREENSHOT_SIZE=720x480` sets the window size). |
 | `scripts/icons.py` | Regenerates the Lucide font subset and `src/icons.rs`. |
-| `scripts/fetch-ysfx.sh [OUT_DIR]` | Fetches the pinned ysfx commit with its submodules (default `third_party/ysfx`). `otozane-plugins/build.rs` builds it with CMake; without it JSFX plugins fail to load with "built without JSFX support". |
+| `scripts/fetch-ysfx.sh [OUT_DIR]` | Fetches the pinned ysfx commit with its submodules (default `third_party/ysfx`) and applies the tracked source-budget patch. `otozane-plugins/build.rs` applies the same patch idempotently and builds with CMake; without the sources JSFX plugins fail to load with "built without JSFX support". |
 | `scripts/build-hush.sh [OUT_DIR]` | Builds `libweya_nc.so` from the pinned Hush commit and copies it with the model and licences (default `third_party/hush`). `OTOZANE_HUSH_DIR` points the service at another directory. |
 
 Example checks used during development:

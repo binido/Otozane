@@ -12,6 +12,12 @@ fn main() {
         return;
     }
     println!("cargo:rerun-if-changed={}", src.display());
+    // third_party is ignored, so the tracked patch is what makes the source
+    // bounds part of the build instead of a local edit.
+    let patch =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("patches/ysfx-source-budget.patch");
+    println!("cargo:rerun-if-changed={}", patch.display());
+    apply_patch(&src, &patch);
     let out = cmake::Config::new(&src)
         .profile("Release")
         .define("YSFX_PLUGIN", "OFF")
@@ -32,4 +38,31 @@ fn main() {
     };
     println!("cargo:rustc-link-lib={cxx}");
     println!("cargo:rustc-cfg=ysfx");
+}
+
+fn apply_patch(src: &std::path::Path, patch: &std::path::Path) {
+    // Reverse-check tells an already-patched tree from a pristine one.
+    let applied = std::process::Command::new("git")
+        .arg("-C")
+        .arg(src)
+        .args(["apply", "--reverse", "--check"])
+        .arg(patch)
+        .status()
+        .is_ok_and(|s| s.success());
+    if applied {
+        return;
+    }
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(src)
+        .arg("apply")
+        .arg(patch)
+        .status();
+    if !status.is_ok_and(|s| s.success()) {
+        panic!(
+            "cannot apply {} to {}: the fetched sources have conflicting edits; restore them, then rerun scripts/fetch-ysfx.sh",
+            patch.display(),
+            src.display()
+        );
+    }
 }

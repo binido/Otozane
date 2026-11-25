@@ -1,0 +1,7 @@
+desc:Import Gain
+author:Otozane
+import import-util.jsfx
+
+@sample
+spl0 *= util_gain;
+spl1 *= util_gain;

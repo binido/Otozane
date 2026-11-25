@@ -6,6 +6,7 @@ use otozane_core::config::PluginRef;
 use std::path::{Path, PathBuf};
 
 /// A JSFX script is parsed in the service process; bound what it can make us read.
+/// The patched ysfx loader uses the same per-file cap and adds a total import budget.
 const MAX_SCRIPT_BYTES: u64 = 1 << 20;
 
 /// Standard JSFX locations: the REAPER user effects folder.
