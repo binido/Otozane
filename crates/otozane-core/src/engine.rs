@@ -12,6 +12,9 @@ pub const MAX_CHANNELS: usize = 2;
 pub const MAX_BLOCK: usize = 1024;
 /// Length of the crossfade used for enable/disable, in frames (10 ms).
 const FADE_FRAMES: f32 = 480.0;
+/// Anything beyond this is not audio. A plugin can emit `f32::MAX`, which
+/// overflows biquad state even though it is finite; clamp it at the boundary.
+const SAMPLE_LIMIT: f32 = 1.0e6;
 
 /// State shared between the controller and one effect instance.
 #[derive(Debug)]
@@ -206,9 +209,11 @@ impl Engine {
         // such sample permanently poisons filter and detector state, so
         // replace it at the boundary and after every slot.
         for s in buf.iter_mut() {
-            if !s.is_finite() {
-                *s = 0.0;
-            }
+            *s = if s.is_finite() {
+                s.clamp(-SAMPLE_LIMIT, SAMPLE_LIMIT)
+            } else {
+                0.0
+            };
         }
         let in_peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         for chunk in buf.chunks_mut(MAX_BLOCK * ch) {
@@ -241,9 +246,11 @@ impl Engine {
 fn sanitize(planes: &mut [&mut [f32]]) {
     for plane in planes {
         for s in plane.iter_mut() {
-            if !s.is_finite() {
-                *s = 0.0;
-            }
+            *s = if s.is_finite() {
+                s.clamp(-SAMPLE_LIMIT, SAMPLE_LIMIT)
+            } else {
+                0.0
+            };
         }
     }
 }
@@ -747,6 +754,45 @@ mod tests {
         );
         assert!(ctl.values(1).iter().all(|v| v.is_finite()));
         eng.process_interleaved(&mut [0.0; 64], 1);
+    }
+
+    #[test]
+    fn huge_finite_plugin_output_does_not_poison_a_builtin() {
+        use crate::config::{PluginFormat, PluginRef};
+        struct Huge;
+        impl Processor for Huge {
+            fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
+                ch[0].fill(f32::MAX);
+            }
+        }
+        let cfg = EffectConfig::new_plugin(
+            1,
+            PluginRef {
+                format: PluginFormat::Jsfx,
+                path: "test.jsfx".into(),
+                uid: "uid".into(),
+                name: "Huge".into(),
+                vendor: String::new(),
+            },
+        );
+        let mut factory = |_: &EffectConfig| {
+            Ok(External {
+                processor: Box::new(Huge),
+                params: Vec::new(),
+                values: Vec::new(),
+            })
+        };
+        let mut eq = EffectConfig::new(2, EffectKind::Equalizer);
+        eq.params.insert("b3_gain".into(), 24.0);
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(&[cfg, eq], &mut factory).unwrap();
+        eng.process_interleaved(&mut vec![0.5; 512], 1);
+        let mut next = vec![0.5f32; 512];
+        eng.process_interleaved(&mut next, 1);
+        assert!(
+            next.iter().all(|s| s.is_finite()) && next[511].abs() > 0.4,
+            "the equalizer state was poisoned"
+        );
     }
 
     #[test]
