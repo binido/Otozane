@@ -595,6 +595,23 @@ fn check_layout(src: &Path) -> Result<(), Error> {
         ("usr/share/doc/otozane", true),
     ];
     for (rel, dir) in required {
+        // A symlinked ancestor would be copied by cp -a and written through.
+        let mut ancestor = PathBuf::new();
+        let mut parts = Path::new(rel).components().peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                break;
+            }
+            ancestor.push(part);
+            let meta = std::fs::symlink_metadata(src.join(&ancestor))
+                .map_err(|e| Error::Layout(format!("{} is missing: {e}", ancestor.display())))?;
+            if !meta.file_type().is_dir() {
+                return Err(Error::Layout(format!(
+                    "{} is not a real directory",
+                    ancestor.display()
+                )));
+            }
+        }
         // symlink_metadata: a symlinked member must not pass the layout check.
         let meta = std::fs::symlink_metadata(src.join(rel))
             .map_err(|e| Error::Layout(format!("{rel} is missing: {e}")))?;
@@ -1061,5 +1078,21 @@ mod tests {
             fs::read_to_string(prefix.join("bin/otozane")).unwrap(),
             "old-app"
         );
+    }
+
+    #[test]
+    fn a_symlinked_ancestor_is_refused() {
+        let t = Temp::new("symlink-ancestor");
+        let src = t.path().join("src");
+        fake_payload(&src);
+        check_layout(&src).unwrap();
+
+        // The leaf is a regular file, but its parent points outside the tree.
+        let outside = t.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("otozane.desktop"), "").unwrap();
+        fs::remove_dir_all(src.join("usr/share/applications")).unwrap();
+        std::os::unix::fs::symlink(&outside, src.join("usr/share/applications")).unwrap();
+        assert!(matches!(check_layout(&src), Err(Error::Layout(_))));
     }
 }
