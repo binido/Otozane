@@ -520,11 +520,11 @@ fn install_tarball(prefix: &Path, version: &str, staged: &Path) -> Result<(), Er
         .prefix(".otozane-update-")
         .tempdir_in(prefix)?;
     let extracted = Command::new("tar")
+        .arg("--no-same-owner")
         .arg("-xzf")
         .arg(staged)
         .arg("-C")
         .arg(work.path())
-        .arg("--no-same-owner")
         .status()?;
     if !extracted.success() {
         return Err(Error::Command {
