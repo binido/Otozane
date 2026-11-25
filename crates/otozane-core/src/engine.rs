@@ -202,6 +202,14 @@ impl Engine {
 
     fn process(&mut self, buf: &mut [f32], ch: usize) {
         let master = self.shared.processing_enabled.load(Ordering::Relaxed);
+        // A broken capture source or a hosted plugin can emit NaN/Inf. One
+        // such sample permanently poisons filter and detector state, so
+        // replace it at the boundary and after every slot.
+        for s in buf.iter_mut() {
+            if !s.is_finite() {
+                *s = 0.0;
+            }
+        }
         let in_peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         for chunk in buf.chunks_mut(MAX_BLOCK * ch) {
             let n = chunk.len() / ch;
@@ -214,6 +222,7 @@ impl Engine {
             let mut planes: [&mut [f32]; MAX_CHANNELS] = [&mut a[0][..n], &mut b[0][..n]];
             for slot in self.chain.slots.iter_mut().flatten() {
                 slot.process(&mut planes[..ch], master);
+                sanitize(&mut planes[..ch]);
             }
             for (i, frame) in chunk.chunks_exact_mut(ch).enumerate() {
                 for (s, plane) in frame.iter_mut().zip(&self.planes) {
@@ -226,6 +235,16 @@ impl Engine {
         s.input_peak.store(s.input_peak.load().max(in_peak));
         s.output_peak.store(s.output_peak.load().max(out_peak));
         s.blocks.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn sanitize(planes: &mut [&mut [f32]]) {
+    for plane in planes {
+        for s in plane.iter_mut() {
+            if !s.is_finite() {
+                *s = 0.0;
+            }
+        }
     }
 }
 
@@ -676,6 +695,69 @@ mod tests {
         let mut tail = [0.5f32; 1024];
         slot.process(&mut [&mut tail], true);
         assert!(tail.iter().all(|&s| (s - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn non_finite_input_does_not_poison_a_builtin() {
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(
+            &[EffectConfig::new(1, EffectKind::Compressor)],
+            &mut no_plugins,
+        )
+        .unwrap();
+        let mut buf = vec![0.5f32; 512];
+        buf[100] = f32::INFINITY;
+        eng.process_interleaved(&mut buf, 1);
+        assert!(eng.shared.input_peak.load().is_finite());
+        let mut next = vec![0.5f32; 512];
+        eng.process_interleaved(&mut next, 1);
+        assert!(
+            next.iter().all(|s| s.is_finite()),
+            "one bad input sample poisoned the compressor"
+        );
+    }
+
+    #[test]
+    fn non_finite_plugin_output_is_sanitized_before_the_next_slot() {
+        use crate::config::{PluginFormat, PluginRef};
+        struct Poison;
+        impl Processor for Poison {
+            fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
+                ch[0].fill(f32::INFINITY);
+            }
+        }
+        let cfg = EffectConfig::new_plugin(
+            1,
+            PluginRef {
+                format: PluginFormat::Jsfx,
+                path: "test.jsfx".into(),
+                uid: "uid".into(),
+                name: "Poison".into(),
+                vendor: String::new(),
+            },
+        );
+        let mut factory = |_: &EffectConfig| {
+            Ok(External {
+                processor: Box::new(Poison),
+                params: Vec::new(),
+                values: Vec::new(),
+            })
+        };
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(
+            &[cfg, EffectConfig::new(2, EffectKind::Compressor)],
+            &mut factory,
+        )
+        .unwrap();
+        let mut buf = vec![0.5f32; 512];
+        eng.process_interleaved(&mut buf, 1);
+        assert!(
+            buf.iter().all(|s| s.is_finite()),
+            "plugin output reached the next slot"
+        );
+        let mut next = vec![0.5f32; 512];
+        eng.process_interleaved(&mut next, 1);
+        assert!(next.iter().all(|s| s.is_finite()));
     }
 
     #[test]
