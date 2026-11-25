@@ -42,6 +42,14 @@ fn err(e: impl std::fmt::Display) -> Response {
     }
 }
 
+/// Whether `name` would replace another profile. Profile names become file
+/// names, and macOS's default filesystem is case-insensitive, so `stream`
+/// would overwrite `Stream.toml`. The active profile may be saved again under
+/// its own exact name.
+fn profile_name_taken(names: &[String], name: &str, active: &str) -> bool {
+    name != active && names.iter().any(|n| n.eq_ignore_ascii_case(name))
+}
+
 impl Service {
     pub fn new(ctl: Controller, backend: Backend, store: Store, settings: Settings) -> Self {
         let scan = std::fs::read_to_string(store.dir().join("plugins.json"))
@@ -299,6 +307,13 @@ impl Service {
                 if let Err(e) = validate_name(&name) {
                     return err(e);
                 }
+                if profile_name_taken(
+                    &self.store.list_profiles(),
+                    &name,
+                    &self.settings.active_profile,
+                ) {
+                    return err(format!("profile '{name}' already exists"));
+                }
                 self.flush();
                 self.settings.active_profile = name;
                 self.dirty_settings = true;
@@ -359,7 +374,7 @@ impl Service {
                             format!("{name} {i}")
                         }
                     })
-                    .find(|n| !taken.contains(n))
+                    .find(|n| !taken.iter().any(|t| t.eq_ignore_ascii_case(n)))
                     .unwrap();
                 match self.store.save_profile(&name, &profile) {
                     Ok(()) => Response::Ok,
@@ -485,5 +500,20 @@ impl Drop for Service {
             cancel.store(true, Ordering::Relaxed);
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_names_collide_case_insensitively() {
+        let names = vec!["Stream".to_string()];
+        assert!(profile_name_taken(&names, "stream", "Default"));
+        assert!(profile_name_taken(&names, "Stream", "Default"));
+        // Re-saving the active profile under its exact name is allowed.
+        assert!(!profile_name_taken(&names, "Stream", "Stream"));
+        assert!(!profile_name_taken(&names, "Other", "Stream"));
     }
 }

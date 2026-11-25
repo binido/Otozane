@@ -1470,7 +1470,8 @@ fn unique_name(taken: &[String], base: &str) -> String {
                 format!("{base} {i}")
             }
         })
-        .find(|n| !taken.contains(n))
+        // Profile files collide case-insensitively on macOS.
+        .find(|n| !taken.iter().any(|t| t.eq_ignore_ascii_case(n)))
         .unwrap()
 }
 
@@ -1652,6 +1653,12 @@ fn dev_screenshot(ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_names_do_not_collide_by_case() {
+        let taken = vec!["Voice".to_string(), "Voice 2".to_string()];
+        assert_eq!(unique_name(&taken, "voice"), "voice 3");
+    }
 
     #[test]
     fn peak_hold_holds_then_falls() {
