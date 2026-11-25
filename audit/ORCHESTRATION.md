@@ -25,7 +25,7 @@ Command (from the repository root; tools limited to Read/Grep/Glob;
 ```
 claude -p "Read crates/otozane-core/src/protocol.rs. Reply with exactly one
 line containing the request size limit constant name and value. Do not modify
-anything and do not use any other tools." --allowedTools "Read,Grep,Glob"
+anything and do not use any other tools." --allowedTools "Read,Grep,Glob" \
 --permission-mode dontAsk --output-format text --no-session-persistence
 ```
 
