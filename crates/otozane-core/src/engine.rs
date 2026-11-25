@@ -87,14 +87,12 @@ impl Slot {
             return;
         }
         let crossfade = self.mix != 1.0 || target != 1.0;
-        if crossfade {
-            // The dry path is delayed by the processor latency so toggling an
-            // effect does not shift the signal in time.
-            for (c, ch) in channels.iter().enumerate() {
-                let dry = &mut self.dry[c][..n];
-                dry.copy_from_slice(ch);
-                self.dry_delay[c].process(dry);
-            }
+        // Keep the dry path delayed by the processor latency even while fully
+        // wet, so a later fade-out has aligned audio instead of stale silence.
+        for (c, ch) in channels.iter().enumerate() {
+            let dry = &mut self.dry[c][..n];
+            dry.copy_from_slice(ch);
+            self.dry_delay[c].process(dry);
         }
         // The processor also runs while fading so the crossfade has a wet side.
         self.processor.process(channels, &self.values);
@@ -629,6 +627,43 @@ mod tests {
         // Then the fade-in, fully wet 480 frames later.
         assert!(buf[101] > 0.5 && buf[101] < 0.51);
         assert_eq!(buf[100 + 480], 1.0);
+    }
+
+    #[test]
+    fn disabling_a_latent_slot_keeps_the_dry_path_aligned() {
+        // Outputs 1.0 with 1000 frames of latency; the input is a steady 0.5.
+        struct Late;
+        impl Processor for Late {
+            fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
+                ch[0].fill(1.0);
+            }
+            fn latency(&self) -> usize {
+                1000
+            }
+        }
+        let shared = Arc::new(SlotShared {
+            id: 1,
+            kind: EffectKind::Gain,
+            enabled: AtomicBool::new(true),
+            params: Box::new([]),
+            meter: AtomicF32::default(),
+        });
+        let mut slot = Slot::new(shared.clone(), Box::new(Late));
+        let mut buf = [0.5f32; 1024];
+        slot.process(&mut [&mut buf], true);
+        assert_eq!(buf[1023], 1.0);
+
+        // Disabling must fade 1.0 down to the latency-aligned dry 0.5, never
+        // into the stale silence the dry delay held before it was primed.
+        shared
+            .enabled
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let mut out = [0.5f32; 1024];
+        slot.process(&mut [&mut out], true);
+        assert!(out.iter().all(|&s| s >= 0.5 - 1e-6), "dry path dropped out");
+        let mut tail = [0.5f32; 1024];
+        slot.process(&mut [&mut tail], true);
+        assert!(tail.iter().all(|&s| (s - 0.5).abs() < 1e-6));
     }
 
     #[test]
