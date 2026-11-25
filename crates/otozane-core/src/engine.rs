@@ -818,10 +818,17 @@ mod tests {
     #[test]
     fn non_finite_plugin_output_is_sanitized_before_the_next_slot() {
         use crate::config::{PluginFormat, PluginRef};
-        struct Poison;
+        struct Poison {
+            first: bool,
+        }
         impl Processor for Poison {
             fn process(&mut self, ch: &mut [&mut [f32]], _: &[f32]) {
-                ch[0].fill(f32::INFINITY);
+                // Emit one bad block, then a valid signal so recovery is visible.
+                if std::mem::take(&mut self.first) {
+                    ch[0].fill(f32::INFINITY);
+                } else {
+                    ch[0].fill(0.5);
+                }
             }
         }
         let cfg = EffectConfig::new_plugin(
@@ -836,7 +843,7 @@ mod tests {
         );
         let mut factory = |_: &EffectConfig| {
             Ok(External {
-                processor: Box::new(Poison),
+                processor: Box::new(Poison { first: true }),
                 params: Vec::new(),
                 values: Vec::new(),
             })
@@ -855,7 +862,10 @@ mod tests {
         );
         let mut next = vec![0.5f32; 512];
         eng.process_interleaved(&mut next, 1);
-        assert!(next.iter().all(|s| s.is_finite()));
+        assert!(
+            next.iter().all(|s| s.is_finite()) && next[0].abs() > 0.0,
+            "the compressor stayed poisoned or silent"
+        );
     }
 
     #[test]
