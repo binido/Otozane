@@ -432,6 +432,10 @@ impl Controller {
                             ),
                         }
                     };
+                    let mut params = params;
+                    for p in &mut params {
+                        p.sanitize();
+                    }
                     let values = values_for(cfg, &params, &fallback);
                     let shared = Arc::new(SlotShared {
                         id: cfg.id,
@@ -695,6 +699,54 @@ mod tests {
         let mut tail = [0.5f32; 1024];
         slot.process(&mut [&mut tail], true);
         assert!(tail.iter().all(|&s| (s - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn non_finite_plugin_parameters_are_sanitized() {
+        use crate::config::{PluginFormat, PluginRef};
+        use crate::param::ParamDesc;
+        struct Pass;
+        impl Processor for Pass {
+            fn process(&mut self, _: &mut [&mut [f32]], _: &[f32]) {}
+        }
+        let desc = ParamDesc {
+            key: "p".into(),
+            name: "P".into(),
+            min: f32::NAN,
+            max: f32::INFINITY,
+            default: f32::NAN,
+            unit: String::new(),
+            steps: 0,
+            log: false,
+            choices: Vec::new(),
+        };
+        let mut factory = |_: &EffectConfig| {
+            Ok(External {
+                processor: Box::new(Pass),
+                params: vec![desc.clone()],
+                values: vec![f32::NAN],
+            })
+        };
+        let cfg = EffectConfig::new_plugin(
+            1,
+            PluginRef {
+                format: PluginFormat::Jsfx,
+                path: "test.jsfx".into(),
+                uid: "uid".into(),
+                name: "Test".into(),
+                vendor: String::new(),
+            },
+        );
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(&[cfg], &mut factory).unwrap();
+        let params = ctl.params(1);
+        assert!(
+            params
+                .iter()
+                .all(|p| p.min.is_finite() && p.max.is_finite() && p.default.is_finite())
+        );
+        assert!(ctl.values(1).iter().all(|v| v.is_finite()));
+        eng.process_interleaved(&mut [0.0; 64], 1);
     }
 
     #[test]

@@ -100,6 +100,24 @@ pub struct ParamDesc {
 }
 
 impl ParamDesc {
+    /// Makes the description safe for `f32::clamp`, JSON, and the UI. A
+    /// hosted plugin can report a non-finite default or range.
+    pub fn sanitize(&mut self) {
+        if !self.min.is_finite() {
+            self.min = 0.0;
+        }
+        if !self.max.is_finite() {
+            self.max = 1.0;
+        }
+        if self.min > self.max {
+            std::mem::swap(&mut self.min, &mut self.max);
+        }
+        if !self.default.is_finite() {
+            self.default = self.min;
+        }
+        self.default = self.default.clamp(self.min, self.max);
+    }
+
     pub fn clamp(&self, v: f32) -> f32 {
         if v.is_nan() {
             self.default
@@ -132,5 +150,30 @@ impl From<&ParamSpec> for ParamDesc {
             log,
             choices,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_descriptions_are_sanitized() {
+        let mut d = ParamDesc {
+            key: "p".into(),
+            name: "P".into(),
+            min: f32::NAN,
+            max: f32::INFINITY,
+            default: f32::NAN,
+            unit: String::new(),
+            steps: 0,
+            log: false,
+            choices: Vec::new(),
+        };
+        d.sanitize();
+        assert!(d.min.is_finite() && d.max.is_finite() && d.default.is_finite());
+        assert!(d.min <= d.max);
+        assert!(d.default >= d.min && d.default <= d.max);
+        assert!(d.clamp(f32::NAN).is_finite());
     }
 }
