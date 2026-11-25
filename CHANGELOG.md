@@ -3,6 +3,29 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
+## 0.6.1 - 2026-11-25
+
+### Fixed
+
+- Bypassing or removing an effect with latency keeps the dry microphone signal
+  aligned during the fade. Invalid plugin samples are filtered before they can
+  disrupt the rest of the effect chain.
+- Switching profiles restores saved plugin state. Profile names that differ
+  only by case no longer overwrite each other. Unreadable profiles are backed
+  up before defaults are saved.
+- **Linux:** fixed a PipeWire crash during stream teardown. Re-enabling the
+  monitor discards stale audio, and reconnect errors remain visible until the
+  connection recovers.
+- **macOS:** capture continues through temporary Core Audio overloads. The
+  virtual microphone driver also checks its read boundaries.
+- Plugin scanning limits how much output is kept in memory and rebuilds
+  damaged caches. JSFX files and their imports are checked against size
+  limits before loading.
+- The updater checks the types of required files and directories in update
+  packages before installing them.
+
+**Full diff**: https://github.com/binido/Otozane/compare/v0.6.0...v0.6.1
+
 ## 0.6.0 - 2026-11-24
 
 ### New
