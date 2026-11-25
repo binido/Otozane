@@ -534,6 +534,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fade_out_wait_covers_a_full_audio_block() {
+        let block_ms = otozane_core::engine::MAX_BLOCK * 1000 / otozane_core::SAMPLE_RATE as usize;
+        assert!(FADE_OUT_WAIT.as_millis() >= block_ms as u128);
+    }
+
+    #[test]
     fn profile_names_collide_case_insensitively() {
         let names = vec!["Stream".to_string()];
         assert!(profile_name_taken(&names, "stream", "Default"));
