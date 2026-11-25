@@ -13,6 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Time to let the audio thread run a removed effect's 10 ms fade-out before
+/// swapping the chain. A capture callback may carry a full 1024-frame block
+/// (21.3 ms at 48 kHz), so the previous 15 ms could swap before the fade ran.
+const FADE_OUT_WAIT: Duration = Duration::from_millis(25);
+
 pub struct Service {
     pub ctl: Controller,
     pub backend: Backend,
@@ -143,7 +148,7 @@ impl Service {
             }
         }
         if faded {
-            std::thread::sleep(Duration::from_millis(15));
+            std::thread::sleep(FADE_OUT_WAIT);
         }
         // The audio thread takes updates once per cycle (or per 100 ms pump
         // when idle), so a burst of edits may briefly find the queue full.

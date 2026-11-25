@@ -135,7 +135,8 @@ Rules followed on the audio thread:
 - A fully bypassed effect is not processed. When it is re-enabled, the slot
   stays dry for the effect's latency before fading in, so audio left in the
   effect's buffers from before the bypass is never heard.
-- Effects that are removed are faded out (disabled, then removed 15 ms later).
+- Effects that are removed are faded out (disabled, then removed 25 ms later,
+  covering a full 1024-frame audio block plus scheduling margin).
 - Gain ramps per block; dynamics effects smooth their gain per sample.
 - Reordering is applied instantly and can produce a small discontinuity.
 
