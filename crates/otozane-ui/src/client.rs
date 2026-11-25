@@ -149,7 +149,12 @@ impl ServiceClient {
                 .map_err(|e| e.to_string())
                 .and_then(|s| toml::from_str::<Profile>(&s).map_err(|e| e.message().to_string()));
             match result {
-                Ok(profile) => {
+                Ok(mut profile) => {
+                    // JSON cannot carry TOML's nan/inf; the service would
+                    // reject the request before it could sanitize it.
+                    for e in &mut profile.chain {
+                        e.sanitize();
+                    }
                     let name = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
