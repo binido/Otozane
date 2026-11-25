@@ -5,6 +5,9 @@ use crate::Instance;
 use otozane_core::config::PluginRef;
 use std::path::{Path, PathBuf};
 
+/// A JSFX script is parsed in the service process; bound what it can make us read.
+const MAX_SCRIPT_BYTES: u64 = 1 << 20;
+
 /// Standard JSFX locations: the REAPER user effects folder.
 pub fn default_dirs() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
@@ -35,9 +38,10 @@ pub fn find_scripts(dir: &Path) -> Vec<PathBuf> {
                     walk(&p, depth + 1, out);
                 }
             } else if ft.is_file()
+                && ft.len() < MAX_SCRIPT_BYTES
                 && match p.extension() {
                     Some(x) => x == "jsfx",
-                    None => ft.len() < 1 << 20 && has_desc(&p),
+                    None => has_desc(&p),
                 }
             {
                 out.push(p);
@@ -247,8 +251,10 @@ mod imp {
 
     /// Reads a script's name, author and tags without compiling it.
     pub fn scan(path: &Path) -> Result<(PluginRef, String), String> {
-        let path_s = path.to_string_lossy();
-        let fx = load(&path_s, false)?;
+        let path_s = path
+            .to_str()
+            .ok_or("plugin path is not valid UTF-8".to_string())?;
+        let fx = load(path_s, false)?;
         let mut name = c_string(unsafe { ffi::ysfx_get_name(fx.0) });
         if name.is_empty() {
             name = path
@@ -264,7 +270,7 @@ mod imp {
             .join("|");
         let plugin = PluginRef {
             format: PluginFormat::Jsfx,
-            path: path_s.into_owned(),
+            path: path_s.to_string(),
             uid: String::new(),
             name,
             vendor: c_string(unsafe { ffi::ysfx_get_author(fx.0) }),
@@ -582,5 +588,26 @@ mod imp {
         fn latency(&self) -> usize {
             self.latency
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_scripts_are_skipped() {
+        let dir = std::env::temp_dir().join(format!("otozane-jsfx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.jsfx");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_SCRIPT_BYTES + 1).unwrap();
+        drop(file);
+        let small = dir.join("small.jsfx");
+        std::fs::write(&small, "desc:test\n").unwrap();
+        let found = find_scripts(&dir);
+        assert!(found.contains(&small));
+        assert!(!found.contains(&big));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

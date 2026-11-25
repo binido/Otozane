@@ -19,13 +19,14 @@ use vst3::Steinberg::Vst::{
     IConnectionPointTrait, IEditController, IEditControllerTrait, IHostApplication,
     IHostApplicationTrait, IParamValueQueue, IParamValueQueueTrait, IParameterChanges,
     IParameterChangesTrait, MediaTypes_, ParamID, ParamValue, ParameterInfo, ProcessContext,
-    ProcessData, ProcessModes_, ProcessSetup, SpeakerArr, SpeakerArrangement, String128,
-    SymbolicSampleSizes_, TChar,
+    ProcessContext_, ProcessData, ProcessModes_, ProcessSetup, SpeakerArr, SpeakerArrangement,
+    String128, SymbolicSampleSizes_, TChar,
 };
 use vst3::Steinberg::{
     FUnknown, IBStream, IBStreamTrait, IPluginBaseTrait, IPluginFactory, IPluginFactory2,
     IPluginFactory2Trait, IPluginFactoryTrait, PClassInfo, PClassInfo2, PFactoryInfo, TUID, int32,
-    int64, kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult,
+    int64, kInvalidArgument, kNotImplemented, kOutOfMemory, kResultFalse, kResultOk, kResultTrue,
+    tresult,
 };
 use vst3::{Class, ComPtr, ComWrapper, Interface};
 
@@ -147,7 +148,12 @@ impl Module {
     }
 
     /// Audio effect classes exported by the module.
-    pub fn classes(&self, path: &Path) -> Vec<(PluginRef, String)> {
+    pub fn classes(&self, path: &Path) -> Result<Vec<(PluginRef, String)>, String> {
+        // PluginRef carries the path as a String; refuse a lossy conversion
+        // instead of listing a plugin that can never be loaded again.
+        let path = path
+            .to_str()
+            .ok_or("plugin path is not valid UTF-8".to_string())?;
         let f = self.factory();
         let mut finfo: PFactoryInfo = unsafe { std::mem::zeroed() };
         let factory_vendor = if unsafe { f.getFactoryInfo(&mut finfo) } == kResultOk {
@@ -193,7 +199,7 @@ impl Module {
             out.push((
                 PluginRef {
                     format: PluginFormat::Vst3,
-                    path: path.to_string_lossy().into_owned(),
+                    path: path.to_string(),
                     uid: uid_hex(&cid),
                     name,
                     vendor: if vendor.is_empty() {
@@ -205,7 +211,7 @@ impl Module {
                 sub,
             ));
         }
-        out
+        Ok(out)
     }
 }
 
@@ -301,11 +307,21 @@ impl MemStream {
 
 impl IBStreamTrait for MemStream {
     unsafe fn read(&self, buffer: *mut c_void, n: int32, read: *mut int32) -> tresult {
+        if buffer.is_null() && n > 0 {
+            return kInvalidArgument;
+        }
         let mut d = self.data.lock().unwrap();
         let (data, pos) = &mut *d;
-        let n = (n.max(0) as usize).min(data.len().saturating_sub(*pos));
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr().add(*pos), buffer as *mut u8, n) };
-        *pos += n;
+        // A plugin can seek past the end; clamp the read position before
+        // forming a pointer into the buffer.
+        let start = (*pos).min(data.len());
+        let n = (n.max(0) as usize).min(data.len() - start);
+        if n > 0 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr().add(start), buffer as *mut u8, n)
+            };
+        }
+        *pos = start + n;
         if !read.is_null() {
             unsafe { *read = n as int32 };
         }
@@ -318,13 +334,21 @@ impl IBStreamTrait for MemStream {
         let mut d = self.data.lock().unwrap();
         let (data, pos) = &mut *d;
         let n = n as usize;
-        let end = *pos + n;
+        let Some(end) = (*pos).checked_add(n) else {
+            return kInvalidArgument;
+        };
         if data.len() < end {
+            // A seek far past the end must not turn into an aborting resize.
+            if data.try_reserve(end - data.len()).is_err() {
+                return kOutOfMemory;
+            }
             data.resize(end, 0);
         }
-        unsafe {
-            std::ptr::copy_nonoverlapping(buffer as *const u8, data.as_mut_ptr().add(*pos), n)
-        };
+        if n > 0 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(buffer as *const u8, data.as_mut_ptr().add(*pos), n)
+            };
+        }
         *pos = end;
         if !written.is_null() {
             unsafe { *written = n as int32 };
@@ -335,12 +359,14 @@ impl IBStreamTrait for MemStream {
         let mut d = self.data.lock().unwrap();
         let (data, pos) = &mut *d;
         let base = match mode {
-            0 => 0,
+            0 => 0i64,
             1 => *pos as i64,
             2 => data.len() as i64,
             _ => return kInvalidArgument,
         };
-        let new = base + offset;
+        let Some(new) = base.checked_add(offset) else {
+            return kInvalidArgument;
+        };
         if new < 0 {
             return kInvalidArgument;
         }
@@ -616,6 +642,9 @@ pub fn instantiate(
         let outs: Vec<usize> = (0..n_out)
             .map(|i| arrangement_channels(current(BusDirections_::kOutput as i32, i)))
             .collect();
+        if outs.first().copied().unwrap_or(0) == 0 {
+            return Err("plugin has no usable audio output".into());
+        }
         // All buses are active: auxiliary inputs (e.g. sidechains) get
         // silence and auxiliary outputs are discarded.
         for (dir, n) in [
@@ -853,6 +882,10 @@ impl Vst3Processor {
         context.tempo = 120.0;
         context.timeSigNumerator = 4;
         context.timeSigDenominator = 4;
+        context.state = ProcessContext_::StatesAndFlags_::kPlaying
+            | ProcessContext_::StatesAndFlags_::kTempoValid
+            | ProcessContext_::StatesAndFlags_::kTimeSigValid
+            | ProcessContext_::StatesAndFlags_::kContTimeValid;
         let mut s = Self {
             inner,
             ids,
@@ -946,7 +979,9 @@ impl Processor for Vst3Processor {
         if r != kResultOk {
             return; // leave the input untouched
         }
-        let main = &self.outs[0];
+        let Some(main) = self.outs.first().filter(|b| !b.is_empty()) else {
+            return;
+        };
         if main.len() == 1 {
             for c in ch.iter_mut() {
                 c[..n].copy_from_slice(&main[0][..n]);
@@ -971,7 +1006,7 @@ impl Processor for Vst3Processor {
 /// loading a plugin executes its code.
 pub fn scan(path: &Path) -> Result<Vec<(PluginRef, String)>, String> {
     let m = Module::load(path)?;
-    Ok(m.classes(path))
+    m.classes(path)
 }
 
 /// Standard VST3 locations on Linux.
@@ -1008,4 +1043,27 @@ pub fn find_bundles(dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vst3::Steinberg::{IBStreamTrait, kInvalidArgument, kOutOfMemory, kResultOk};
+
+    #[test]
+    fn mem_stream_rejects_bad_buffers_and_huge_seeks() {
+        let s = MemStream::new(vec![1, 2, 3, 4]);
+        let mut n = 0;
+        unsafe {
+            assert_eq!(s.read(std::ptr::null_mut(), 4, &mut n), kInvalidArgument);
+        }
+        let mut pos = 0;
+        unsafe {
+            assert_eq!(s.seek(i64::MAX / 2, 0, &mut pos), kResultOk);
+            assert_eq!(
+                s.write(b"x".as_ptr() as *mut c_void, 1, &mut n),
+                kOutOfMemory
+            );
+        }
+    }
 }
