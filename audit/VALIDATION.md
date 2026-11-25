@@ -25,7 +25,7 @@ model bundle are present. The Hush benchmark is `#[ignore]` and was not run.
 | `cargo build --locked` | PASS (exit 0) |
 | `cargo fmt --all -- --check` | PASS (exit 0) |
 | `cargo clippy --locked --workspace --all-targets` | PASS (exit 0, no warnings) |
-| `cargo test --locked --workspace` | PASS (exit 0; 113 tests: 41 core, 5 service, 6 plugin unit, 2 JSFX integration, 1 LSP, 58 UI) |
+| `cargo test --locked --workspace` | PASS (exit 0; 115 tests: 41 core, 2 CoreAudio, 5 service, 6 plugin unit, 2 JSFX integration, 1 LSP, 58 UI) |
 | `cargo test --release --locked -p otozane-core -p otozane-service` | PASS (41 core, 5 service) |
 | Workflow YAML parse (`python3 -c 'yaml.safe_load(...)'`) | PASS |
 
