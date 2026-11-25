@@ -148,18 +148,18 @@ impl Backend {
                     }
                     // Read after the sender is installed: later changes arrive as commands.
                     let desired = desired2.lock().unwrap().clone();
-                    match run(&shared, rx, desired) {
+                    let error = match run(&shared, rx, desired) {
                         Ok(true) => return,
-                        Ok(false) => {}
-                        Err(e) => shared.set_capture(CaptureState::Error(e.to_string())),
-                    }
+                        Ok(false) => None,
+                        Err(e) => Some(e.to_string()),
+                    };
                     // Lost the PipeWire connection (e.g. daemon restart); retry
-                    // with a clean status instead of stale devices.
+                    // with clean devices, but keep the failure reason visible.
                     {
                         let mut st = shared.status.lock().unwrap();
                         st.virtual_source_ready = false;
                         st.devices.clear();
-                        st.capture = CaptureState::Starting;
+                        st.capture = error.map_or(CaptureState::Starting, CaptureState::Error);
                     }
                     std::thread::sleep(Duration::from_secs(1));
                 }
@@ -426,6 +426,7 @@ fn run(
         })
         .register();
 
+    // Bound second, so the listener drops before the stream it is on.
     let (_playback, _playback_listener) = create_playback(&core, shared)?;
 
     let state = Rc::new(RefCell::new(Main {
