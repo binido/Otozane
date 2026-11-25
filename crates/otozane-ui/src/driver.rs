@@ -58,7 +58,7 @@ fn run(cmd: String, done: &'static str) {
             "do shell script \"{}\" with administrator privileges",
             cmd.replace('\\', "\\\\").replace('"', "\\\"")
         );
-        let out = std::process::Command::new("osascript")
+        let out = std::process::Command::new("/usr/bin/osascript")
             .args(["-e", &script])
             .output();
         let result = match out {
