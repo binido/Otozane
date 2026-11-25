@@ -324,7 +324,18 @@ impl Controller {
         chain: &[EffectConfig],
         factory: &mut Factory<'_>,
     ) -> Result<(), ControlError> {
-        self.build(chain, self.channels, factory)
+        self.build(chain, self.channels, factory, false)
+    }
+
+    /// Replaces the chain and rebuilds plugin processors from their saved
+    /// state. Built-in effects with the same id and kind are still reused.
+    /// Use this when loading a profile, whose opaque plugin state must win.
+    pub fn restore_chain(
+        &mut self,
+        chain: &[EffectConfig],
+        factory: &mut Factory<'_>,
+    ) -> Result<(), ControlError> {
+        self.build(chain, self.channels, factory, true)
     }
 
     /// Rebuilds every effect of the chain for `channels` (1 or 2). Plugin
@@ -336,7 +347,7 @@ impl Controller {
         factory: &mut Factory<'_>,
     ) -> Result<(), ControlError> {
         assert!((1..=MAX_CHANNELS).contains(&channels));
-        self.build(chain, channels, factory)
+        self.build(chain, channels, factory, false)
     }
 
     fn build(
@@ -344,6 +355,7 @@ impl Controller {
         chain: &[EffectConfig],
         channels: usize,
         factory: &mut Factory<'_>,
+        fresh_plugins: bool,
     ) -> Result<(), ControlError> {
         self.collect_garbage();
         if self.outgoing.slots() == 0 {
@@ -358,7 +370,7 @@ impl Controller {
         let mut infos = Vec::with_capacity(chain.len());
         for cfg in chain {
             let existing = self.slots.iter().position(|s| {
-                !rebuild
+                !(rebuild || (fresh_plugins && cfg.kind == EffectKind::Plugin))
                     && s.shared.id == cfg.id
                     && s.shared.kind == cfg.kind
                     && s.plugin == cfg.plugin
@@ -664,6 +676,49 @@ mod tests {
         let mut tail = [0.5f32; 1024];
         slot.process(&mut [&mut tail], true);
         assert!(tail.iter().all(|&s| (s - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn restoring_a_chain_recreates_plugins_from_saved_state() {
+        use crate::config::{PluginFormat, PluginRef};
+        use std::sync::atomic::AtomicUsize;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cfg = || {
+            EffectConfig::new_plugin(
+                1,
+                PluginRef {
+                    format: PluginFormat::Jsfx,
+                    path: "test.jsfx".into(),
+                    uid: "uid".into(),
+                    name: "Test".into(),
+                    vendor: String::new(),
+                },
+            )
+        };
+        let mut factory = |_: &EffectConfig| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(External {
+                processor: Box::new(crate::effects::Passthrough),
+                params: Vec::new(),
+                values: Vec::new(),
+            })
+        };
+        let (mut ctl, mut eng) = new(48_000.0, 1);
+        ctl.set_chain(&[cfg()], &mut factory).unwrap();
+        eng.process_interleaved(&mut [0.0; 64], 1);
+        ctl.set_chain(&[cfg()], &mut factory).unwrap();
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "an unchanged chain reuses the plugin"
+        );
+        ctl.restore_chain(&[cfg()], &mut factory).unwrap();
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "a profile restore rebuilds the plugin"
+        );
+        ctl.collect_garbage();
     }
 
     #[test]
