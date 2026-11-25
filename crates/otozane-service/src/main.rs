@@ -159,15 +159,26 @@ fn start_processing() -> Result<Service, Box<dyn std::error::Error>> {
     let store = store::Store::new(store::config_dir());
     let mut settings = store.load_settings();
     settings.channels = settings.channels.clamp(1, 2);
-    let profile = store
-        .load_profile(&settings.active_profile)
-        .unwrap_or_else(|e| {
+    let profile = match store.load_profile(&settings.active_profile) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
-                "profile '{}' not loaded ({e}); using defaults",
+                "profile '{}' not found; using defaults",
                 settings.active_profile
             );
             Profile::default()
-        });
+        }
+        Err(e) => {
+            // Cover a truncated or hand-edited file: keep it as .bak instead
+            // of letting the default chain overwrite it on the next flush.
+            eprintln!(
+                "profile '{}' unreadable ({e}); moved aside; using defaults",
+                settings.active_profile
+            );
+            let _ = store.backup_profile(&settings.active_profile);
+            Profile::default()
+        }
+    };
 
     let (ctl, eng) = engine::new(SAMPLE_RATE as f32, settings.channels as usize);
     ctl.shared

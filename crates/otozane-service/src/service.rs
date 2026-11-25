@@ -117,7 +117,7 @@ impl Service {
     }
 
     pub fn apply_chain(&mut self, chain: Vec<EffectConfig>) -> Result<(), String> {
-        self.build_chain(chain, self.settings.channels as usize)
+        self.build_chain(chain, self.settings.channels as usize, false)
     }
 
     /// Rebuilds the chain for a new channel count.
@@ -131,7 +131,7 @@ impl Service {
         // Plugins are recreated from the state saved into the chain.
         // A failed save would lose the plugin's recent changes, so nothing is switched.
         self.capture_plugin_states()?;
-        self.build_chain(self.chain.clone(), channels as usize)?;
+        self.build_chain(self.chain.clone(), channels as usize, false)?;
         #[cfg(target_os = "linux")]
         self.backend.set_channels(channels as usize);
         self.settings.channels = channels;
@@ -139,7 +139,17 @@ impl Service {
         Ok(())
     }
 
-    fn build_chain(&mut self, chain: Vec<EffectConfig>, channels: usize) -> Result<(), String> {
+    fn build_chain(
+        &mut self,
+        mut chain: Vec<EffectConfig>,
+        channels: usize,
+        fresh_plugins: bool,
+    ) -> Result<(), String> {
+        // A hand-edited TOML profile can contain nan/inf, which JSON cannot
+        // round-trip in Status.
+        for e in &mut chain {
+            e.sanitize();
+        }
         let mut ids = std::collections::HashSet::new();
         if !chain.iter().all(|e| ids.insert(e.id)) {
             return Err("effect ids must be unique".into());
@@ -184,6 +194,8 @@ impl Service {
         loop {
             let r = if rebuild {
                 self.ctl.set_channels(channels, &chain, &mut factory)
+            } else if fresh_plugins {
+                self.ctl.restore_chain(&chain, &mut factory)
             } else {
                 self.ctl.set_chain(&chain, &mut factory)
             };
@@ -208,7 +220,11 @@ impl Service {
     fn switch_profile(&mut self, name: &str) -> Result<(), String> {
         let p = self.store.load_profile(name).map_err(|e| e.to_string())?;
         self.flush();
-        self.apply_chain(p.chain)?;
+        if self.dirty_profile || self.dirty_settings {
+            return Err("could not save the current profile".into());
+        }
+        // The loaded profile's plugin state must win over the live instances.
+        self.build_chain(p.chain, self.settings.channels as usize, true)?;
         self.settings.active_profile = name.to_string();
         self.dirty_settings = true;
         // The chain came from the file; no need to write it back.
@@ -315,14 +331,20 @@ impl Service {
                     return err(format!("profile '{name}' already exists"));
                 }
                 self.flush();
+                if self.dirty_profile {
+                    return err("could not save the current profile");
+                }
                 self.settings.active_profile = name;
                 self.dirty_settings = true;
                 self.dirty_profile = true;
                 self.flush();
+                if self.dirty_profile || self.dirty_settings {
+                    return err("could not save the profile");
+                }
                 Response::Ok
             }
             Request::DeleteProfile { name } => {
-                if name == self.settings.active_profile {
+                if name.eq_ignore_ascii_case(&self.settings.active_profile) {
                     return err("cannot delete the active profile");
                 }
                 match self.store.delete_profile(&name) {
@@ -360,6 +382,10 @@ impl Service {
             Request::ImportProfile { name, profile } => {
                 if let Err(e) = validate_name(&name) {
                     return err(e);
+                }
+                let mut profile = profile;
+                for e in &mut profile.chain {
+                    e.sanitize();
                 }
                 let mut ids = std::collections::HashSet::new();
                 if !profile.chain.iter().all(|e| ids.insert(e.id)) {
