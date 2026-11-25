@@ -55,8 +55,11 @@ fn main() {
             "--version" => println!("otozaned {}", env!("CARGO_PKG_VERSION")),
             // Plugin scan helper, started by the service once per bundle.
             "--scan" => {
-                let path = std::env::args().nth(2).unwrap_or_default();
-                match otozane_plugins::scan_bundle(std::path::Path::new(&path)) {
+                let path = std::env::args_os()
+                    .nth(2)
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default();
+                match otozane_plugins::scan_bundle(&path) {
                     Ok(list) => println!("{}", serde_json::to_string(&list).unwrap_or_default()),
                     Err(e) => {
                         println!("error: {e}");

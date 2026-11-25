@@ -52,10 +52,16 @@ fn profile_name_taken(names: &[String], name: &str, active: &str) -> bool {
 
 impl Service {
     pub fn new(ctl: Controller, backend: Backend, store: Store, settings: Settings) -> Self {
-        let scan = std::fs::read_to_string(store.dir().join("plugins.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let cache = store.dir().join("plugins.json");
+        let scan = match std::fs::read_to_string(&cache) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+                // A truncated or old-schema cache must not suppress a rescan.
+                eprintln!("{}: {e}; rescanning", cache.display());
+                let _ = std::fs::remove_file(&cache);
+                PluginList::default()
+            }),
+            Err(_) => PluginList::default(),
+        };
         Self {
             ctl,
             backend,
@@ -175,14 +181,21 @@ impl Service {
         let mut factory = |cfg: &EffectConfig| -> Result<External, String> {
             let plugin = cfg.plugin.as_ref().ok_or("plugin entry without a plugin")?;
             let state = cfg.state.as_deref().and_then(otozane_plugins::decode_state);
-            let inst = otozane_plugins::instantiate(
+            let inst = match otozane_plugins::instantiate(
                 plugin,
                 state.as_deref(),
                 otozane_core::SAMPLE_RATE as f32,
                 channels,
                 otozane_core::engine::MAX_BLOCK,
-            )
-            .map_err(|e| format!("{}: {e}", plugin.name))?;
+            ) {
+                Ok(inst) => inst,
+                Err(e) => {
+                    // Do not keep a control from an earlier plugin that used
+                    // this id: its state does not belong to this entry.
+                    plugins.remove(&cfg.id);
+                    return Err(format!("{}: {e}", plugin.name));
+                }
+            };
             plugins.insert(cfg.id, inst.control);
             Ok(External {
                 processor: inst.processor,
@@ -440,7 +453,10 @@ impl Service {
                 otozane_plugins::scan_dirs(&dirs, &exe, || cancelled.load(Ordering::Relaxed))
             {
                 if let Ok(json) = serde_json::to_string_pretty(&list) {
-                    let _ = std::fs::write(&cache, json);
+                    let tmp = cache.with_extension("json.tmp");
+                    if std::fs::write(&tmp, json).is_ok() {
+                        let _ = std::fs::rename(&tmp, &cache);
+                    }
                 }
                 *scan.lock().unwrap() = list;
             }
