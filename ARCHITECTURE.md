@@ -91,8 +91,19 @@ crate compiles to nothing on the other OS.
   first two channels (duplicates a mono input) and resamples to 48 kHz with a
   linear interpolator in steps of 1024 input frames. The engine selects the
   left channel for a mono chain. Switching the chain format keeps the stream open.
+- **Virtual microphone playback** waits for one playback buffer plus one capture
+  buffer before starting or recovering. It targets a queue of one capture buffer
+  after playback (about 12 ms for 512 input frames at 44.1 kHz). The queue fill
+  is smoothed with a two-second time constant and adjusts the stereo interpolation
+  ratio by up to ±1000 ppm to match the independent clocks. A 128-frame ramp
+  (2.7 ms) fades to silence on underruns and blends back in on recovery or
+  stale-audio skips.
+  The underrun counter includes recovery time, and the skipped-frame counter
+  reports latency trims. Stopping capture clears queued audio and emits digital
+  silence. A stream replacement resets the playback timing state.
 - **Monitor** plays the monitor ring to the system default output at that
-  device's rate, resampled the same way, with the same stale-audio rule. It is
+  device's rate. It uses the nominal rate ratio and discards stale audio beyond
+  one monitor buffer plus one capture buffer, with a 256-frame margin. It is
   recreated when the default output changes and skipped while the default
   output is Otozane Microphone.
 - **Microphone permission.** `Otozane.app` declares `NSMicrophoneUsageDescription`.
