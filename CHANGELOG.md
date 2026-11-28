@@ -3,6 +3,21 @@
 Every release has a section here. The release workflow publishes the section
 for the tagged version as the GitHub release notes and fails if it is missing.
 
+## 0.6.2 - 2026-11-28
+
+### Fixed
+
+- Equalizer bands clear their previous audio when turned off, preventing a pop
+  when turned back on. The low-pass and high-pass labels now say which
+  frequencies each filter cuts.
+- Hush fades between noise suppression and the original signal when
+  processing misses a deadline. The effect keeps the same latency.
+- **macOS:** Otozane Microphone compensates for small clock differences
+  between the physical input and the virtual device and smooths transitions
+  when audio is temporarily unavailable.
+
+**Full diff**: https://github.com/binido/Otozane/compare/v0.6.1...v0.6.2
+
 ## 0.6.1 - 2026-11-25
 
 ### Fixed

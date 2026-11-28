@@ -3151,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "libloading 0.8.9",
  "rtrb",
@@ -3162,7 +3162,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-coreaudio"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "cpal",
  "objc2-core-audio",
@@ -3173,7 +3173,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-pipewire"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "otozane-core",
  "pipewire",
@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-plugins"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "cmake",
  "libc",
@@ -3196,7 +3196,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-service"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "otozane-core",
  "otozane-coreaudio",
@@ -3209,7 +3209,7 @@ dependencies = [
 
 [[package]]
 name = "otozane-ui"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "eframe",
  "egui",
