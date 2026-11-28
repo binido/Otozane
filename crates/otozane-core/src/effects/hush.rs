@@ -4,8 +4,8 @@
 //! `weya_nc_process_frame` allocates (tract builds its tensors per call), so
 //! inference runs on a worker thread. The audio thread resamples 48 kHz to
 //! 16 kHz, sends 10 ms frames over a lock-free queue, and reads results back
-//! after a fixed budget of one engine block. A frame that is not back in time
-//! is replaced by the dry signal, so latency never changes.
+//! after a fixed budget of one engine block. Missed deadlines fade to aligned
+//! dry audio at the same latency.
 
 use super::Processor;
 use crate::engine::MAX_CHANNELS;
@@ -46,6 +46,7 @@ const TAPS: usize = 127;
 const BRANCH: usize = TAPS.div_ceil(RATIO);
 /// Frames queued in each direction (the pipeline holds at most four).
 const QUEUE: usize = 8;
+const FALLBACK_FADE: usize = 48;
 
 /// Total latency at 48 kHz for a model with `model_delay` 16 kHz samples of delay.
 const fn latency(model_delay: usize) -> usize {
@@ -141,8 +142,9 @@ pub struct Hush {
     play: i64,
     /// Frame being played, `None` if it did not come back in time.
     recv: Option<Frame>,
-    /// 48 kHz samples left to replace with the dry signal.
+    /// 48 kHz samples left before fading back to wet.
     fallback: usize,
+    fallback_fade: usize,
     to_worker: rtrb::Producer<Frame>,
     from_worker: rtrb::Consumer<Frame>,
     worker: Thread,
@@ -225,6 +227,7 @@ impl Hush {
             play: -(PIPE as i64),
             recv: None,
             fallback: 0,
+            fallback_fade: 0,
             to_worker,
             from_worker,
             worker: join.thread().clone(),
@@ -254,6 +257,7 @@ impl Hush {
                 _ => None,
             };
             if self.recv.is_none() {
+                // The dry hold covers the interpolator's FIR tail after the missing frame.
                 self.fallback = RATIO * HOP + TAPS;
             }
         }
@@ -301,16 +305,21 @@ impl Processor for Hush {
                     st.up.push(wet[c]);
                 }
             }
-            let fallback = self.fallback > 0;
+            self.fallback_fade = if self.fallback > 0 {
+                (self.fallback_fade + 1).min(FALLBACK_FADE)
+            } else {
+                self.fallback_fade.saturating_sub(1)
+            };
             self.fallback = self.fallback.saturating_sub(1);
+            let wet_mix = mix * (1.0 - self.fallback_fade as f32 / FALLBACK_FADE as f32);
             for (ch, st) in channels.iter_mut().zip(self.channels.iter_mut()) {
                 let dry = st.dry.tick(ch[i]);
-                let wet = if fallback {
+                ch[i] = if wet_mix == 0.0 {
                     dry
                 } else {
-                    dot(&self.poly[self.phase], st.up.get())
+                    let wet = dot(&self.poly[self.phase], st.up.get());
+                    dry + (wet - dry) * wet_mix
                 };
-                ch[i] = dry + (wet - dry) * mix;
             }
             self.phase = (self.phase + 1) % RATIO;
         }
@@ -648,20 +657,78 @@ mod tests {
 
     #[test]
     fn late_frames_play_dry_without_changing_latency() {
-        // A worker that never keeps up: every frame misses its deadline.
-        let slow: Denoise = Box::new(|_, i, o| {
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            *o = *i;
-            0.0
-        });
-        let mut h = Hush::with_denoiser(1, MODEL_DELAY, slow).unwrap();
+        let mut h = Hush::with_denoiser(1, MODEL_DELAY, identity()).unwrap();
+        h.from_worker = rtrb::RingBuffer::new(QUEUE).1;
         let input = noise(20_000, 0.5);
         let mut out = input.clone();
         for chunk in out.chunks_mut(1024) {
             h.process(&mut [chunk], &[100.0, 100.0]);
         }
-        for i in LATENCY..input.len() {
-            assert_eq!(out[i], input[i - LATENCY], "sample {i}");
+        assert!(out[..LATENCY].iter().all(|&sample| sample == 0.0));
+        assert_eq!(out[LATENCY..], input[..input.len() - LATENCY]);
+    }
+
+    #[test]
+    fn deadline_misses_fade_to_dry_and_back_across_blocks() {
+        let input = [0.3, -0.15];
+        let wet = [0.0, -0.075];
+        let render = |blocks: &[usize], mix: f32| {
+            let mut h = Hush::with_denoiser(2, MODEL_DELAY, identity()).unwrap();
+            let (mut results, receiver) = rtrb::RingBuffer::new(QUEUE);
+            h.from_worker = receiver;
+            let mut left = vec![input[0]; RATIO * (PIPE + 18 * HOP)];
+            let mut right = vec![input[1]; left.len()];
+            let (mut pos, mut seq) = (0, 0);
+            for size in blocks.iter().cycle() {
+                let end = (pos + size).min(left.len());
+                while RATIO * (PIPE + seq * HOP) < end {
+                    if !matches!(seq, 9 | 13 | 14) {
+                        let frame = Frame {
+                            seq: seq as u64,
+                            data: wet.map(|sample| [sample; HOP]),
+                        };
+                        assert!(results.push(frame).is_ok());
+                    }
+                    seq += 1;
+                }
+                h.process(
+                    &mut [&mut left[pos..end], &mut right[pos..end]],
+                    &[15.0, mix],
+                );
+                pos = end;
+                if pos == left.len() {
+                    break;
+                }
+            }
+            [left, right]
+        };
+        let blocks = &[1, 77, 1024, 45];
+        let out = render(blocks, 60.0);
+        assert_eq!(out, render(&[256], 60.0));
+        let zero_mix = render(blocks, 0.0);
+        let wet_mix = 0.6 * (1.0 - crate::dsp::db_to_lin(-15.0));
+        for (c, dry) in input.into_iter().enumerate() {
+            let mixed = dry + (wet[c] - dry) * wet_mix;
+            assert!(zero_mix[c][..LATENCY].iter().all(|&sample| sample == 0.0));
+            assert!(zero_mix[c][LATENCY..].iter().all(|&sample| sample == dry));
+            for (first, count) in [(9, 1), (13, 2)] {
+                let start = RATIO * (PIPE + first * HOP);
+                let recover = start + RATIO * count * HOP + TAPS;
+                let max_jump = out[c][start - 1..recover + 100]
+                    .windows(2)
+                    .map(|pair| (pair[1] - pair[0]).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    max_jump < 0.005,
+                    "channel {c}, frame {first}, max jump {max_jump}"
+                );
+                assert!(
+                    out[c][start + FALLBACK_FADE - 1..recover]
+                        .iter()
+                        .all(|&sample| sample == dry)
+                );
+                assert!((out[c][recover + FALLBACK_FADE - 1] - mixed).abs() < 1e-5);
+            }
         }
     }
 
