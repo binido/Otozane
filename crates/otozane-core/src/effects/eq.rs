@@ -123,13 +123,14 @@ impl Processor for Equalizer {
         // Coefficients are recomputed only when a parameter changed.
         if self.last[..] != p[..] {
             self.last.copy_from_slice(p);
-            for (b, c) in p
-                .as_chunks::<PER_BAND>()
-                .0
-                .iter()
-                .zip(self.coefs.iter_mut())
-            {
-                *c = band_coefs(b, self.sr);
+            for (band, values) in p.as_chunks::<PER_BAND>().0.iter().enumerate() {
+                let next = band_coefs(values, self.sr);
+                if self.coefs[band].is_some() && next.is_none() {
+                    for channel in &mut self.state {
+                        channel[band] = Biquad::default();
+                    }
+                }
+                self.coefs[band] = next;
             }
         }
         for (c, st) in ch.iter_mut().zip(self.state.iter_mut()) {
@@ -165,5 +166,30 @@ mod tests {
         let out = run(&mut Equalizer::new(48000.0, 1), &sine, &p);
         let peak = out[24000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!((peak - 0.1 * 1.995).abs() < 0.005, "{peak}");
+    }
+
+    #[test]
+    fn re_enabled_low_pass_stays_silent() {
+        let mut p = defaults(EffectKind::Equalizer);
+        for band in p.as_chunks_mut::<PER_BAND>().0 {
+            band[0] = 0.0;
+        }
+        p[..PER_BAND].copy_from_slice(&[4.0, 65.0, 0.0, 0.85]);
+        let mut eq = Equalizer::new(48_000.0, 1);
+        let tone: Vec<f32> = (0..1600)
+            .map(|frame| 0.2 * (std::f32::consts::TAU * 30.0 * frame as f32 / 48_000.0).cos())
+            .collect();
+        run(&mut eq, &tone, &p);
+
+        p[0] = 0.0;
+        run(&mut eq, &[0.0; 2048], &p);
+
+        p[0] = 4.0;
+        let out = run(&mut eq, &[0.0; 256], &p);
+        assert!(
+            out.iter().all(|&sample| sample == 0.0),
+            "first sample after re-enabling was {}",
+            out[0]
+        );
     }
 }

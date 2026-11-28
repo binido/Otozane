@@ -6,7 +6,7 @@ use crate::theme;
 use crate::widgets::{self, icon, icon_text};
 use egui::{Margin, RichText, Stroke, Ui};
 use otozane_core::config::{EffectConfig, PluginRef, next_id};
-use otozane_core::effects::{EffectKind, hush};
+use otozane_core::effects::{EffectKind, eq, hush};
 use otozane_core::param::{ParamKind, ParamSpec};
 use otozane_core::protocol::{EffectInfo, Request};
 
@@ -542,6 +542,16 @@ fn plugin_params(app: &mut App, ui: &mut Ui, i: usize, info: &EffectInfo) {
 
 /// Equalizer: frequency response curve and one row per band.
 fn eq_editor(ui: &mut Ui, id: u64, values: &[f32], changes: &mut Vec<(&'static str, f32)>) {
+    const TYPE_LABELS: &[&str] = &[
+        eq::TYPES[0],
+        eq::TYPES[1],
+        eq::TYPES[2],
+        eq::TYPES[3],
+        "Low pass (cuts highs)",
+        "High pass (cuts lows)",
+    ];
+    const TYPE_WIDTH: f32 = 156.0;
+
     let p = theme::current(ui.ctx());
     let sr = otozane_core::SAMPLE_RATE as f32;
     let (rect, _) = ui.allocate_exact_size(
@@ -576,20 +586,15 @@ fn eq_editor(ui: &mut Ui, id: u64, values: &[f32], changes: &mut Vec<(&'static s
     let points: Vec<egui::Pos2> = (0..=200)
         .map(|k| {
             let f = 20.0 * 1000f32.powf(k as f32 / 200.0);
-            egui::pos2(
-                x_of(f),
-                y_of(otozane_core::effects::eq::response_db(values, f, sr)),
-            )
+            egui::pos2(x_of(f), y_of(eq::response_db(values, f, sr)))
         })
         .collect();
     painter.add(egui::Shape::line(points, Stroke::new(2.0, p.accent_bg)));
     ui.add_space(6.0);
 
     let specs = EffectKind::Equalizer.params();
-    // Band number, type box, three value fields and the gaps take about 420 px,
-    // the sliders share the rest. Below that the grid scrolls sideways instead
-    // of widening the card past the others.
-    let slider_w = ((ui.available_width() - 420.0) / 3.0).clamp(60.0, 110.0);
+    // The grid scrolls sideways when the card cannot fit the minimum slider widths.
+    let slider_w = ((ui.available_width() - TYPE_WIDTH - 304.0) / 3.0).clamp(60.0, 110.0);
     egui::ScrollArea::horizontal()
         .id_salt(("eq-scroll", id))
         .show(ui, |ui| {
@@ -612,14 +617,18 @@ fn eq_editor(ui: &mut Ui, id: u64, values: &[f32], changes: &mut Vec<(&'static s
                         ui.label(format!("{}", b + 1));
                         let on = vals[0].round() as i32 != 0;
                         let has_gain = matches!(vals[0].round() as i32, 1..=3);
-                        for (k, (spec, &v)) in band.iter().zip(vals).enumerate() {
+                        for (k, (&spec, &v)) in band.iter().zip(vals).enumerate() {
+                            let spec = if k == 0 {
+                                spec.choice(TYPE_LABELS)
+                            } else {
+                                spec
+                            };
                             let mut v = v;
                             let enabled = k == 0 || (on && (k != 2 || has_gain));
                             ui.add_enabled_ui(enabled, |ui| {
                                 ui.spacing_mut().slider_width = slider_w;
-                                // Same width for every band, "Peak" and "High shelf" alike.
-                                ui.spacing_mut().combo_width = 116.0;
-                                if param(ui, spec, &mut v, id) {
+                                ui.spacing_mut().combo_width = TYPE_WIDTH;
+                                if param(ui, &spec, &mut v, id) {
                                     changes.push((spec.key, v));
                                 }
                             });
