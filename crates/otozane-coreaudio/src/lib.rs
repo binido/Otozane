@@ -10,13 +10,16 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 pub use otozane_core::backend::{CaptureState, Counters, Device, Status};
-use otozane_core::backend::{STEREO, auto_input, pull_stereo, push_stereo};
+use otozane_core::backend::{STEREO, auto_input, push_stereo};
 use otozane_core::engine::Engine;
+use playback::{OutputRing, Playback};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+mod playback;
 
 const RATE: u32 = otozane_core::SAMPLE_RATE;
 /// UID of the Otozane Microphone device, which apps record from. Never offered as an input.
@@ -52,7 +55,7 @@ struct RtState {
 #[derive(Clone)]
 struct Shared {
     rt: Arc<Mutex<RtState>>,
-    out_rx: Arc<Mutex<rtrb::Consumer<f32>>>,
+    out_rx: Arc<Mutex<OutputRing>>,
     monitor_rx: Arc<Mutex<rtrb::Consumer<f32>>>,
     monitor_on: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
@@ -80,7 +83,7 @@ impl Backend {
                 out: out_tx,
                 monitor: mon_tx,
             })),
-            out_rx: Arc::new(Mutex::new(out_rx)),
+            out_rx: Arc::new(Mutex::new(OutputRing::new(out_rx))),
             monitor_rx: Arc::new(Mutex::new(mon_rx)),
             monitor_on: Arc::default(),
             status: status.clone(),
@@ -206,6 +209,7 @@ impl Main {
             .is_some_and(|o| o.alive_on(Some(OUTPUT_UID)))
         {
             self.output = None;
+            self.shared.out_rx.lock().unwrap().discard();
             self.output = find(self.host.output_devices(), OUTPUT_UID)
                 .and_then(|d| log_err("virtual microphone", create_output(&d, &self.shared)));
         }
@@ -241,6 +245,7 @@ impl Main {
         } else {
             // Drop the old stream first, the engine can only be driven by one.
             self.capture = None;
+            self.shared.out_rx.lock().unwrap().set_capturing(false);
             Some(match (&target, self.muted, output_ready) {
                 (_, true, _) => CaptureState::Muted,
                 (_, _, false) => {
@@ -254,6 +259,7 @@ impl Main {
                     {
                         Ok(c) => {
                             self.capture = Some(c);
+                            self.shared.out_rx.lock().unwrap().set_capturing(true);
                             CaptureState::Running(uid.clone())
                         }
                         Err(e) => CaptureState::Error(e),
@@ -476,6 +482,7 @@ fn create_output(device: &cpal::Device, shared: &Shared) -> Result<Running, Stri
         buffer_size: cpal::BufferSize::Default,
     };
     let (rx, counters) = (shared.out_rx.clone(), shared.counters.clone());
+    let mut playback = Playback::new();
     let (failed, on_error) = error_flag();
     let stream = device
         .build_output_stream::<f32, _, _>(
@@ -486,14 +493,17 @@ fn create_output(device: &cpal::Device, shared: &Shared) -> Result<Running, Stri
                     .playback_quantum
                     .store(frames as u32, Ordering::Relaxed);
                 let Ok(mut rx) = rx.try_lock() else {
-                    out.fill(0.0);
+                    let missing = playback.gap(out);
+                    counters
+                        .underrun_frames
+                        .fetch_add(missing as u64, Ordering::Relaxed);
                     return;
                 };
                 let q = counters.capture_quantum.load(Ordering::Relaxed) as usize;
-                let (got, skipped, left) = pull_stereo(&mut rx, out, frames, q);
+                let (missing, skipped, left) = playback.render(&mut rx, out, q);
                 counters
                     .underrun_frames
-                    .fetch_add((frames - got) as u64, Ordering::Relaxed);
+                    .fetch_add(missing as u64, Ordering::Relaxed);
                 counters
                     .skipped_frames
                     .fetch_add(skipped as u64, Ordering::Relaxed);
